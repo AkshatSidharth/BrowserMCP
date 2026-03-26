@@ -9,18 +9,20 @@ const logger = require('../logger');
  * Runs the full agentic loop — reads page, acts, re-reads, acts again —
  * until the goal is complete or it can't proceed.
  */
-// YouTube search query extractor
+// YouTube search query extractor — strips fluff, extracts what to search
 function extractYoutubeQuery(command) {
-  const patterns = [
-    /(?:search|look|find|play|watch)\s+(?:for\s+)?(?:a\s+)?(.+?)\s+(?:on\s+youtube|video)/i,
-    /(?:on\s+youtube|youtube\s+(?:search|pe|par|mein))\s+(.+)/i,
-    /youtube\s+(?:pe|par|mein)\s+(.+)/i,
-  ];
-  for (const re of patterns) {
-    const m = command.match(re);
-    if (m) return m[1].trim();
-  }
-  return null;
+  let q = command
+    // Remove polite prefixes
+    .replace(/^(?:can\s+you\s+|please\s+|could\s+you\s+|would\s+you\s+|hey\s+|bro\s+)/i, '')
+    // Remove action verbs at the start
+    .replace(/^(?:open|search\s+for|look\s+for|find|play|watch|show\s+me|search|look\s+up|get\s+me)\s+/i, '')
+    // Remove "on youtube / youtube pe / youtube par" suffix
+    .replace(/\s+(?:on\s+youtube|on\s+yt|youtube\s+pe|youtube\s+par|youtube\s+mein|in\s+youtube)\s*$/i, '')
+    // Remove trailing "video(s)" only when it's not part of the actual query
+    .replace(/\s+videos?\s*$/i, '')
+    .trim();
+
+  return q.length > 1 ? q : null;
 }
 
 async function smartAct(_page, params, onStep) {
