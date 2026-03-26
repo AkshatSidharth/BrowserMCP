@@ -245,15 +245,15 @@
 
   <!-- Example chips -->
   <div class="examples">
+    <span class="ex-chip">Open Flipkart</span>
+    <span class="ex-chip">Search for iPhone 15 on Flipkart</span>
+    <span class="ex-chip">Add the first product to cart</span>
     <span class="ex-chip">Open YouTube</span>
-    <span class="ex-chip">Open Instagram</span>
-    <span class="ex-chip">Search Google for news</span>
-    <span class="ex-chip">Open CRM</span>
-    <span class="ex-chip">Create lead Rahul 9876543210</span>
-    <span class="ex-chip">Get tickets</span>
+    <span class="ex-chip">Open Instagram and log in</span>
+    <span class="ex-chip">Enter my phone number 6299291331</span>
+    <span class="ex-chip">Click Request OTP</span>
     <span class="ex-chip">New tab</span>
     <span class="ex-chip">Take screenshot</span>
-    <span class="ex-chip">Go back</span>
   </div>
 
   <hr class="divider">
@@ -289,31 +289,59 @@ function log(msg, type = 'info') {
 function setStatus(msg) { document.getElementById('status').textContent = msg; }
 function setInterim(msg) { document.getElementById('interim').textContent = msg; }
 
-// ─── Send command to server ───────────────────────────────────────────────────
-let _busy = false; // prevent overlapping commands
+// ─── Send command — consumes SSE stream for real-time step updates ────────────
+let _busy = false;
 
 async function sendCommand(text) {
   if (!text.trim()) return;
-  if (_busy) { log(`⏳ Queued: "${text}"`, 'info'); return; }
+  if (_busy) { log(`⏳ Still working, queued: "${text}"`, 'warn'); return; }
   _busy = true;
   log(`▶ "${text}"`, 'info');
-  setStatus('Acting ...');
+  setStatus('Agent working ...');
+
   try {
-    const res  = await fetch('/command', {
+    const res = await fetch('/command', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ text }),
     });
-    const data = await res.json();
-    if (data.ok)   log(`✓ ${data.message}`, 'ok');
-    else           log(`⚠ ${data.message}`, 'warn');
-    refreshScreenshot();
+
+    // Read Server-Sent Events line by line as they stream in
+    const reader  = res.body.getReader();
+    const decoder = new TextDecoder();
+    let   buffer  = '';
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+
+      // SSE lines look like: "data: {...}\n\n"
+      const lines = buffer.split('\n');
+      buffer = lines.pop(); // keep incomplete last line
+
+      for (const line of lines) {
+        if (!line.startsWith('data: ')) continue;
+        try {
+          const event = JSON.parse(line.slice(6));
+          if (event.type === 'step') {
+            log(`  ${event.message}`, 'info');
+            setStatus(event.message);
+          } else if (event.type === 'transcript') {
+            log(`🗣 "${event.text}"`, 'info');
+          } else if (event.type === 'done') {
+            if (event.ok) log(`✓ ${event.message}`, 'ok');
+            else          log(`⚠ ${event.message}`, 'warn');
+            refreshScreenshot();
+          }
+        } catch { /* partial line, ignore */ }
+      }
+    }
   } catch (err) {
     log(`✗ ${err.message}`, 'err');
   } finally {
     _busy = false;
-    if (continuousActive) setStatus('Listening ... speak your next command');
-    else setStatus('Done. Ready.');
+    setStatus(continuousActive ? 'Listening ... speak your next command' : 'Done. Ready.');
   }
 }
 
