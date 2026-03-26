@@ -93,12 +93,25 @@ async function executeStep(page, handles, step) {
       const el = handles[element_index];
       if (!el) throw new Error(`No element at index ${element_index}`);
       await el.scrollIntoViewIfNeeded().catch(() => {});
-      await el.click({ clickCount: 3 });          // focus + select all existing text
-      await page.waitForTimeout(150);
-      await page.keyboard.press('Control+a');      // ensure all selected
-      await page.keyboard.press('Backspace');      // clear
+      await el.click();
       await page.waitForTimeout(100);
-      await page.keyboard.type(String(value), { delay: 40 });  // type naturally
+
+      // Force-clear React/controlled inputs using native value setter
+      await el.evaluate((node) => {
+        const nativeSetter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value')?.set
+          || Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value')?.set;
+        if (nativeSetter) nativeSetter.call(node, '');
+        node.value = '';
+        node.dispatchEvent(new Event('input', { bubbles: true }));
+        node.dispatchEvent(new Event('change', { bubbles: true }));
+      }).catch(() => {});
+
+      // Also keyboard-clear as backup
+      await page.keyboard.press('Control+a');
+      await page.keyboard.press('Backspace');
+      await page.waitForTimeout(100);
+
+      await page.keyboard.type(String(value), { delay: 40 });
       break;
     }
     case 'click': {
@@ -146,6 +159,8 @@ async function executeStep(page, handles, step) {
 async function runAgentLoop(page, goal, onStep) {
   const history = [];
   let stepCount = 0;
+  let lastDesc  = '';
+  let repeatCount = 0;
 
   logger.info(`Agent loop started. Goal: "${goal}"`);
 
@@ -191,8 +206,21 @@ async function runAgentLoop(page, goal, onStep) {
     // 4. Execute step
     try {
       await executeStep(page, handles, step);
-      history.push(step.description || step.action);
-      if (onStep) onStep(`⚡ ${step.description || step.action}`);
+      const desc = step.description || step.action;
+      history.push(desc);
+      if (onStep) onStep(`⚡ ${desc}`);
+
+      // Loop detection: same description 3 times in a row → stuck
+      if (desc === lastDesc) {
+        repeatCount++;
+        if (repeatCount >= 3) {
+          logger.warn(`Agent stuck in loop on: "${desc}"`);
+          return { success: false, message: `Stuck repeating the same step. Try rephrasing your command.`, steps: history };
+        }
+      } else {
+        repeatCount = 0;
+        lastDesc = desc;
+      }
     } catch (err) {
       const errMsg = `${step.description || step.action} → FAILED: ${err.message}`;
       history.push(errMsg);
