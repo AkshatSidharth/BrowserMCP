@@ -27,6 +27,15 @@ const ALLOWED_ACTIONS = [
     destructive: false,
   },
   {
+    name: 'login_to_website',
+    description: 'Log in to the current website by finding login fields in the page DOM and filling them. Use when user says log in, sign in, or enter credentials.',
+    params: {
+      username: 'string — email address or username',
+      password: 'string — password',
+    },
+    destructive: false,
+  },
+  {
     name: 'search_google',
     description: 'Search Google for a query.',
     params: { query: 'string — the search terms' },
