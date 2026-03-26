@@ -41,12 +41,21 @@ async function connectBrowser() {
         '--disable-setuid-sandbox',
         '--disable-dev-shm-usage',
         '--disable-gpu',
+        '--disable-blink-features=AutomationControlled', // hide automation flag
       ],
     };
     if (CHROMIUM_EXEC) launchOptions.executablePath = CHROMIUM_EXEC;
     _browser = await chromium.launch(launchOptions);
-    _context = await _browser.newContext();
-    _page    = await _context.newPage();
+    _context = await _browser.newContext({
+      // Appear as a real Chrome on macOS to avoid bot detection
+      userAgent: 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+      viewport: { width: 1280, height: 800 },
+    });
+    _page = await _context.newPage();
+    // Remove the webdriver flag that sites use to detect Playwright
+    await _page.addInitScript(() => {
+      Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
+    });
     logger.info('Headless Chromium launched.');
   } else {
     logger.info(`Connecting to Chrome at ${CDP_URL} ...`);

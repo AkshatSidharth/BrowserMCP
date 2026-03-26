@@ -23,6 +23,7 @@ const registry = {
   go_back:         require('./goBack'),
   reload_page:     require('./reloadPage'),
   take_screenshot: require('./takeScreenshot'),
+  click_captcha:   require('./clickCaptcha'),
 };
 
 /**

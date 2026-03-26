@@ -94,6 +94,12 @@ const ALLOWED_ACTIONS = [
     params: { filename: 'string — optional filename without extension' },
     destructive: false,
   },
+  {
+    name: 'click_captcha',
+    description: 'Click the reCAPTCHA "I am not a robot" checkbox on the current page.',
+    params: {},
+    destructive: false,
+  },
 ];
 
 // Fast lookup map: action name → action config
