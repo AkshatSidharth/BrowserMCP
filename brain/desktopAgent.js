@@ -120,9 +120,41 @@ async function executeDesktopStep(step) {
       break;
     }
 
+    case 'open_settings_panel': {
+      // Open a specific macOS System Settings panel via URL scheme — no Accessibility needed
+      const PANEL_URLS = {
+        wifi:        'x-apple.systempreferences:com.apple.wifi-settings-extension',
+        bluetooth:   'x-apple.systempreferences:com.apple.Bluetooth-Settings.extension',
+        network:     'x-apple.systempreferences:com.apple.Network-Settings.extension',
+        display:     'x-apple.systempreferences:com.apple.Displays-Settings.extension',
+        sound:       'x-apple.systempreferences:com.apple.Sound-Settings.extension',
+        battery:     'x-apple.systempreferences:com.apple.Battery-Settings.extension',
+        notifications:'x-apple.systempreferences:com.apple.Notifications-Settings.extension',
+        privacy:     'x-apple.systempreferences:com.apple.settings.PrivacySecurity.extension',
+        appearance:  'x-apple.systempreferences:com.apple.Appearance-Settings.extension',
+        wallpaper:   'x-apple.systempreferences:com.apple.Wallpaper-Settings.extension',
+        screensaver: 'x-apple.systempreferences:com.apple.ScreenSaver-Settings.extension',
+        accessibility:'x-apple.systempreferences:com.apple.Accessibility-Settings.extension',
+        focus:       'x-apple.systempreferences:com.apple.Focus-Settings.extension',
+        storage:     'x-apple.systempreferences:com.apple.settings.Storage',
+        general:     'x-apple.systempreferences:com.apple.General-Settings.extension',
+        airdrop:     'x-apple.systempreferences:com.apple.AirDrop-Handoff-Settings.extension',
+        users:       'x-apple.systempreferences:com.apple.Users-Groups-Settings.extension',
+        keyboard:    'x-apple.systempreferences:com.apple.Keyboard-Settings.extension',
+        mouse:       'x-apple.systempreferences:com.apple.Mouse-Settings.extension',
+        trackpad:    'x-apple.systempreferences:com.apple.Trackpad-Settings.extension',
+        siri:        'x-apple.systempreferences:com.apple.Siri-Settings.extension',
+        vpn:         'x-apple.systempreferences:com.apple.NetworkExtensionSettingsUI.NESettingsUIExtension',
+      };
+      const key = (step.panel || '').toLowerCase();
+      const url = PANEL_URLS[key] || `x-apple.systempreferences:`;
+      await execAsync(`open "${url}"`);
+      await new Promise(r => setTimeout(r, 1200));
+      break;
+    }
+
     case 'open_app': {
       await execAsync(`open -a "${step.app}"`).catch(async () => {
-        // Try without -a in case it's a file/URL handler
         await execAsync(`open "${step.app}"`);
       });
       await new Promise(r => setTimeout(r, step.wait_ms || 1800));
@@ -180,6 +212,11 @@ Available step types:
   → {"type":"type_text", "text":"Hello", "description":"Type search query"}
 - key_combo: keyboard shortcut
   → {"type":"key_combo", "keys":["command","space"], "description":"Open Spotlight"}
+- open_settings_panel: open a specific macOS System Settings panel directly (NO Accessibility needed)
+  → {"type":"open_settings_panel", "panel":"wifi", "description":"Open Wi-Fi settings"}
+  Available panels: wifi, bluetooth, network, display, sound, battery, notifications, privacy,
+  appearance, wallpaper, screensaver, accessibility, focus, storage, general, airdrop,
+  users, keyboard, mouse, trackpad, siri, vpn
 - open_app: open a Mac application by name
   → {"type":"open_app", "app":"System Settings", "wait_ms":2000, "description":"Open System Settings"}
 - focus_app: bring an app to front
@@ -198,9 +235,9 @@ Available step types:
   → {"type":"failed", "message":"reason"}
 
 Strategy:
-1. Look at the screenshot. If you can see the target element (button, menu item, icon, input field) → use click_at with its exact coordinates.
-2. If the target app is not open yet → use open_app first, then wait, then click_at on the UI element in the next iteration.
-3. For System Settings panels: open_app "System Settings", wait 2000ms, then click_at on the correct sidebar item.
+1. For ANY System Settings / System Preferences panel → ALWAYS use open_settings_panel with the panel name. Never use click_at for System Settings navigation. This works without any permissions.
+2. For other apps: look at the screenshot. If you can see the target element → use click_at with exact coordinates.
+3. If the target app is not open yet → use open_app first, then wait, then click_at on the UI element.
 4. For typing: click_at on the input field first, then type_text.
 5. For email/compose: prefer open_url to Gmail compose page — it's simpler than Mail.app.
 6. Return ONE logical sequence of steps. Be precise with coordinates — look carefully at the screenshot.

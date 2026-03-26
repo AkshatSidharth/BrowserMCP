@@ -147,7 +147,11 @@ async function runAgentLoop(page, goal, onStep) {
 
     const ctx = await extractPageContext(page);
     const domText = formatContext(ctx);
-    const screenshotBuf = await page.screenshot({ type: 'jpeg', quality: 50, fullPage: false });
+    const screenshotBuf = await page.screenshot({ type: 'jpeg', quality: 50, fullPage: false, timeout: 10000 }).catch(() => null);
+    if (!screenshotBuf) {
+      logger.warn('Page screenshot timed out — skipping step');
+      return { success: false, message: 'Page screenshot timed out. The page may be stuck or unloaded.' };
+    }
     const base64 = screenshotBuf.toString('base64');
 
     logger.debug(`Step ${stepCount} — page: ${ctx.url} — elements: ${ctx.elements.length}`);
