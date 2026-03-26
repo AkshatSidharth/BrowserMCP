@@ -8,8 +8,12 @@ const readline = require('readline');
 const { OpenAI } = require('openai');
 const logger = require('../logger');
 
-const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
-const RECORD_SECONDS = parseInt(process.env.VOICE_RECORD_SECONDS || '5', 10);
+let _openai = null;
+const getClient = () => {
+  if (!_openai) _openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+  return _openai;
+};
+const RECORD_SECONDS = () => parseInt(process.env.VOICE_RECORD_SECONDS || '5', 10);
 
 // ─── Demo mode: read text from stdin ─────────────────────────────────────────
 
@@ -50,7 +54,7 @@ async function recordAndTranscribe() {
   const recorder = require('node-record-lpcm16');
   const tmpFile = path.join(os.tmpdir(), `mcp-voice-${Date.now()}.wav`);
 
-  logger.info(`Recording for ${RECORD_SECONDS}s ... (speak now)`);
+  logger.info(`Recording for ${RECORD_SECONDS()}s ... (speak now)`);
 
   await new Promise((resolve, reject) => {
     const file = fs.createWriteStream(tmpFile, { encoding: 'binary' });
@@ -67,7 +71,7 @@ async function recordAndTranscribe() {
       recording.stop();
       file.end();
       resolve();
-    }, RECORD_SECONDS * 1000);
+    }, RECORD_SECONDS() * 1000);
 
     recording.stream().on('error', reject);
   });
@@ -82,7 +86,7 @@ async function recordAndTranscribe() {
  */
 async function transcribeFile(filePath) {
   try {
-    const response = await openai.audio.transcriptions.create({
+    const response = await getClient().audio.transcriptions.create({
       model: 'whisper-1',
       file: fs.createReadStream(filePath),
       language: 'en',

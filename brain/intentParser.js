@@ -5,8 +5,19 @@ const { OpenAI } = require('openai');
 const logger = require('../logger');
 const { ALLOWED_ACTIONS } = require('../safety/guard');
 
-const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
-const LLM_MODEL = process.env.LLM_MODEL || 'gpt-4o';
+// Lazy singleton — instantiated on first use so dotenv always loads first
+let _openai = null;
+function getClient() {
+  if (!_openai) {
+    if (!process.env.OPENAI_API_KEY) {
+      throw new Error('OPENAI_API_KEY is not set. Create a .env file (see .env.example).');
+    }
+    _openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+  }
+  return _openai;
+}
+
+const LLM_MODEL = () => process.env.LLM_MODEL || 'gpt-4o';
 
 // ─── System prompt ────────────────────────────────────────────────────────────
 // The LLM is instructed to output ONLY valid JSON — no prose, no markdown.
@@ -51,8 +62,8 @@ Output schema:
 async function parseIntent(text) {
   logger.debug(`Parsing intent for: "${text}"`);
 
-  const response = await openai.chat.completions.create({
-    model: LLM_MODEL,
+  const response = await getClient().chat.completions.create({
+    model: LLM_MODEL(),
     temperature: 0,            // Deterministic output
     max_tokens: 256,
     response_format: { type: 'json_object' },
