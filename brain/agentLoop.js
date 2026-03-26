@@ -41,13 +41,14 @@ Critical rules:
 3. If a cookie banner / popup / overlay is blocking the page → click to dismiss it first.
 4. If a CAPTCHA appears → return {"action":"failed","message":"CAPTCHA detected, please solve it manually then retry"}.
 5. If an OTP field appears → return {"action":"failed","message":"OTP sent to phone. Please say 'enter OTP XXXXXX' once you receive it"}.
-6. For YouTube search: click the search bar [element_index], then fill with the query, then press Enter. After results load, scroll and click the best matching video title.
-7. For Flipkart/Amazon add-to-cart: look for "Add to Cart" or "Buy Now" buttons.
-8. Use element_index from the numbered list — do NOT guess CSS selectors.
-9. After each fill, check if a "Next" or submit button needs to be clicked.
-10. If the goal is clearly complete (cart updated, order placed, product found, video playing), return done.
-11. Never loop on the same action twice — if something failed, try a different approach.
-12. scroll direction: "down" to scroll down, "up" to scroll up. amount is pixels (default 400).
+6. NEVER type placeholder values like <yourphonenumberhere>, [phone], [email], YOUR_NUMBER etc. If the actual value (phone number, email, password, name) is not explicitly given in the GOAL, return {"action":"failed","message":"Please say your phone number / email / password to enter it"}.
+7. For YouTube search: click the search bar [element_index], then fill with the query, then press Enter. After results load, scroll and click the best matching video title.
+8. For Flipkart/Amazon add-to-cart: look for "Add to Cart" or "Buy Now" buttons.
+9. Use element_index from the numbered list — do NOT guess CSS selectors.
+10. After each fill, check if a "Next" or submit button needs to be clicked.
+11. If the goal is clearly complete (cart updated, order placed, product found, video playing), return done.
+12. Never loop on the same action twice — if something failed, try a different approach.
+13. scroll direction: "down" to scroll down, "up" to scroll up. amount is pixels (default 400).
 `.trim();
 
 // ─── Get next step from GPT-4o ─────────────────────────────────────────────────
