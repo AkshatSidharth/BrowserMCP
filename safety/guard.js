@@ -1,0 +1,141 @@
+'use strict';
+
+const readline = require('readline');
+const logger = require('../logger');
+
+// ─── Action catalogue ─────────────────────────────────────────────────────────
+// Each entry describes one action that the LLM is allowed to dispatch.
+// Add new actions here AND create a matching handler in actions/.
+
+const ALLOWED_ACTIONS = [
+  {
+    name: 'open_youtube',
+    description: 'Open YouTube in the browser.',
+    params: {},
+    destructive: false,
+  },
+  {
+    name: 'search_google',
+    description: 'Search Google for a query.',
+    params: { query: 'string — the search terms' },
+    destructive: false,
+  },
+  {
+    name: 'navigate_to',
+    description: 'Navigate the browser to a specific URL.',
+    params: { url: 'string — full URL including https://' },
+    destructive: false,
+  },
+  {
+    name: 'open_crm',
+    description: 'Open the CRM dashboard.',
+    params: {},
+    destructive: false,
+  },
+  {
+    name: 'create_lead',
+    description: 'Create a new lead/contact in the CRM.',
+    params: {
+      name:  'string — full name of the lead',
+      phone: 'string — phone number (optional)',
+      email: 'string — email address (optional)',
+      note:  'string — any additional note (optional)',
+    },
+    destructive: false,
+  },
+  {
+    name: 'search_lead',
+    description: 'Search for a lead or contact in the CRM by name or phone.',
+    params: { query: 'string — name or phone number to search' },
+    destructive: false,
+  },
+  {
+    name: 'get_tickets',
+    description: 'Open the CRM tickets / support queue view.',
+    params: {},
+    destructive: false,
+  },
+  {
+    name: 'assign_ticket',
+    description: 'Assign a CRM ticket to an agent.',
+    params: {
+      ticket_id: 'string — the ticket ID or number',
+      agent:     'string — name or email of the agent to assign to',
+    },
+    destructive: false,
+  },
+  {
+    name: 'resolve_ticket',
+    description: 'Mark a CRM ticket as resolved.',
+    params: { ticket_id: 'string — the ticket ID' },
+    destructive: true,    // Requires confirmation
+  },
+  {
+    name: 'go_back',
+    description: 'Navigate back to the previous page.',
+    params: {},
+    destructive: false,
+  },
+  {
+    name: 'reload_page',
+    description: 'Reload / refresh the current page.',
+    params: {},
+    destructive: false,
+  },
+  {
+    name: 'take_screenshot',
+    description: 'Take a screenshot of the current page and save it locally.',
+    params: { filename: 'string — optional filename without extension' },
+    destructive: false,
+  },
+];
+
+// Fast lookup map: action name → action config
+const ACTION_MAP = Object.fromEntries(ALLOWED_ACTIONS.map(a => [a.name, a]));
+
+// ─── Validation ───────────────────────────────────────────────────────────────
+
+/**
+ * Validate that an intent is in the whitelist.
+ * Returns { ok: true } or { ok: false, reason: string }.
+ */
+function validateAction(intent) {
+  const { action } = intent;
+
+  if (!action || action === 'unknown') {
+    return { ok: false, reason: `Could not understand command. Try again.` };
+  }
+
+  if (!ACTION_MAP[action]) {
+    return {
+      ok: false,
+      reason: `Action "${action}" is not in the whitelist. Blocked for safety.`,
+    };
+  }
+
+  return { ok: true };
+}
+
+/**
+ * For destructive actions, ask the user to confirm in the terminal.
+ * Returns true if confirmed, false if denied.
+ */
+async function confirmDestructive(intent) {
+  const config = ACTION_MAP[intent.action];
+  if (!config || !config.destructive) return true;
+
+  const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+  return new Promise((resolve) => {
+    rl.question(
+      `\n⚠️  "${intent.action}" is a destructive action. Params: ${JSON.stringify(intent.params)}\n   Confirm? [y/N] `,
+      (answer) => {
+        rl.close();
+        const confirmed = answer.trim().toLowerCase() === 'y';
+        if (!confirmed) logger.warn(`Action "${intent.action}" cancelled by user.`);
+        resolve(confirmed);
+      },
+    );
+  });
+}
+
+module.exports = { ALLOWED_ACTIONS, ACTION_MAP, validateAction, confirmDestructive };
