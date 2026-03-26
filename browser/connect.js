@@ -17,12 +17,10 @@ const LAUNCH_MODE =
   process.argv.includes('--launch') ||
   process.env.BROWSER_LAUNCH === 'true';
 
-// Path to the pre-installed Playwright Chromium on this machine.
-// Playwright looks here when PLAYWRIGHT_BROWSERS_PATH is set, or falls back
-// to the default cache location.
-const CHROMIUM_EXEC =
-  process.env.CHROMIUM_EXEC ||
-  '/root/.cache/ms-playwright/chromium-1194/chrome-linux/chrome';
+// Optional: explicit path to Chromium binary.
+// If not set, Playwright automatically finds its own bundled Chromium.
+// Only set CHROMIUM_EXEC in .env when you need to override (e.g. Linux servers).
+const CHROMIUM_EXEC = process.env.CHROMIUM_EXEC || null;
 
 let _browser = null;
 let _context = null;
@@ -34,17 +32,19 @@ async function connectBrowser() {
   if (_browser) return _browser;
 
   if (LAUNCH_MODE) {
-    logger.info(`Launching headless Chromium (${CHROMIUM_EXEC}) ...`);
-    _browser = await chromium.launch({
-      executablePath: CHROMIUM_EXEC,
+    const execInfo = CHROMIUM_EXEC ? ` (${CHROMIUM_EXEC})` : ' (Playwright bundled)';
+    logger.info(`Launching headless Chromium${execInfo} ...`);
+    const launchOptions = {
       headless: true,
       args: [
         '--no-sandbox',
         '--disable-setuid-sandbox',
-        '--disable-dev-shm-usage',  // important in Docker / low-memory envs
+        '--disable-dev-shm-usage',
         '--disable-gpu',
       ],
-    });
+    };
+    if (CHROMIUM_EXEC) launchOptions.executablePath = CHROMIUM_EXEC;
+    _browser = await chromium.launch(launchOptions);
     _context = await _browser.newContext();
     _page    = await _context.newPage();
     logger.info('Headless Chromium launched.');
