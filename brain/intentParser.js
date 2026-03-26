@@ -43,9 +43,10 @@ Rules:
 3. For plain NAVIGATION without "app" — websites, web URLs ("open Gmail", "open Instagram", "go to YouTube", "X kholo", "new tab") → use open_website or new_tab.
 4. For NATIVE DESKTOP actions — ("open Notes", "open Calendar", "open Finder", "write a mail using Mail app", "press keyboard shortcut", "type something on desktop") → use desktop_act.
 5. For COMPOSE/EMAIL tasks ("write an email to X", "compose email to X", "send a mail") → use desktop_act so the agent can fill in To, Subject, Body.
-6. For EVERYTHING ELSE that involves interacting with the current browser page → use smart_act with command=the user's full intent.
+6. For SEARCH/FIND tasks on a website ("search for X on YouTube", "find a video of X", "look up X", "search X on Amazon/Flipkart") → use smart_act. The agent will navigate to the site, type in the search bar, and scroll through results like a human.
+7. For EVERYTHING ELSE that involves interacting with the current browser page → use smart_act with command=the user's full intent.
    This includes: entering text, clicking buttons, logging in, filling forms, entering OTP, scrolling, anything on the page.
-7. smart_act is the PREFERRED action for any browser page interaction — it reads the DOM and figures out the steps itself.
+8. smart_act is the PREFERRED action for any browser page interaction — it reads the DOM and figures out the steps itself.
 8. Extract values the user mentions — phone numbers, emails, names, passwords — and include them in the command param.
 9. Never return "unknown".
 

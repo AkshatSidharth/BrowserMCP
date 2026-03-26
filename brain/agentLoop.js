@@ -29,6 +29,7 @@ Available actions:
 - fill:     type text into an input field        → {"action":"fill",     "element_index":N, "value":"...",  "description":"..."}
 - click:    click a button, link, or element      → {"action":"click",    "element_index":N,                "description":"..."}
 - press:    press a keyboard key                  → {"action":"press",    "key":"Enter",                    "description":"..."}
+- scroll:   scroll the page                       → {"action":"scroll",   "direction":"down", "amount":400, "description":"..."}
 - wait:     wait for page/content to load         → {"action":"wait",     "ms":2000,                        "description":"..."}
 - navigate: go to a URL directly                  → {"action":"navigate", "url":"https://...",              "description":"..."}
 - done:     goal is fully achieved                → {"action":"done",     "message":"what was accomplished"}
@@ -40,11 +41,13 @@ Critical rules:
 3. If a cookie banner / popup / overlay is blocking the page → click to dismiss it first.
 4. If a CAPTCHA appears → return {"action":"failed","message":"CAPTCHA detected, please solve it manually then retry"}.
 5. If an OTP field appears → return {"action":"failed","message":"OTP sent to phone. Please say 'enter OTP XXXXXX' once you receive it"}.
-6. For Flipkart/Amazon add-to-cart: look for "Add to Cart" or "Buy Now" buttons.
-7. Use element_index from the numbered list — do NOT guess CSS selectors.
-8. After each fill, check if a "Next" or submit button needs to be clicked.
-9. If the goal is clearly complete (cart updated, order placed, product found), return done.
-10. Never loop on the same action twice — if something failed, try a different approach.
+6. For YouTube search: click the search bar [element_index], then fill with the query, then press Enter. After results load, scroll and click the best matching video title.
+7. For Flipkart/Amazon add-to-cart: look for "Add to Cart" or "Buy Now" buttons.
+8. Use element_index from the numbered list — do NOT guess CSS selectors.
+9. After each fill, check if a "Next" or submit button needs to be clicked.
+10. If the goal is clearly complete (cart updated, order placed, product found, video playing), return done.
+11. Never loop on the same action twice — if something failed, try a different approach.
+12. scroll direction: "down" to scroll down, "up" to scroll up. amount is pixels (default 400).
 `.trim();
 
 // ─── Get next step from GPT-4o ─────────────────────────────────────────────────
@@ -92,9 +95,12 @@ async function executeStep(page, handles, step) {
       const el = handles[element_index];
       if (!el) throw new Error(`No element at index ${element_index}`);
       await el.scrollIntoViewIfNeeded().catch(() => {});
-      await el.click({ clickCount: 3 });
+      await el.click({ clickCount: 3 });          // focus + select all existing text
+      await page.waitForTimeout(150);
+      await page.keyboard.press('Control+a');      // ensure all selected
+      await page.keyboard.press('Backspace');      // clear
       await page.waitForTimeout(100);
-      await page.keyboard.type(String(value), { delay: 35 });
+      await page.keyboard.type(String(value), { delay: 40 });  // type naturally
       break;
     }
     case 'click': {
@@ -110,6 +116,13 @@ async function executeStep(page, handles, step) {
     }
     case 'wait': {
       await page.waitForTimeout(ms || 1500);
+      break;
+    }
+    case 'scroll': {
+      const direction = step.direction === 'up' ? -1 : 1;
+      const amount    = step.amount || 400;
+      await page.evaluate(({ dir, amt }) => window.scrollBy(0, dir * amt), { dir: direction, amt: amount });
+      await page.waitForTimeout(500);
       break;
     }
     case 'navigate': {
