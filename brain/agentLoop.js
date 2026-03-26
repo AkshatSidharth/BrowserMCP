@@ -40,14 +40,17 @@ Critical rules:
 2. Look at the screenshot carefully — identify what page you are on.
 3. If a cookie banner / popup / overlay is blocking the page → click to dismiss it first.
 4. If a CAPTCHA appears → return {"action":"failed","message":"CAPTCHA detected, please solve it manually then retry"}.
-5. If an OTP field appears → return {"action":"failed","message":"OTP sent to phone. Please say 'enter OTP XXXXXX' once you receive it"}.
-6. NEVER type placeholder values like <yourphonenumberhere>, [phone], [email], YOUR_NUMBER etc. If the actual value (phone number, email, password, name) is not explicitly given in the GOAL, return {"action":"failed","message":"Please say your phone number / email / password to enter it"}.
-7. For YouTube search: click the search bar [element_index], then fill with the query, then press Enter. After results load, scroll and click the best matching video title.
+5. OTP RULES (important):
+   a. If you see an OTP input screen AND the GOAL does not contain a 4-6 digit OTP code → return {"action":"failed","message":"OTP sent to phone. Please say 'enter OTP XXXXXX' once you receive it"}. Do NOT try to fill digits yourself.
+   b. If the GOAL contains an OTP code (e.g. "OTP is 962342" or "enter OTP 962342") → fill it. For single-box OTP: fill element with the full code. For multi-box digit inputs (one box per digit): click the FIRST box, then use {"action":"press","key":"9"} for each digit one at a time — DO NOT use fill for individual digit boxes.
+   c. After entering OTP in ALL boxes, click Verify/Submit ONCE. If verify fails after 1 click → return failed, do not retry.
+6. NEVER type placeholder values like <yourphonenumberhere>, [phone], [email], YOUR_NUMBER etc. If the actual value is not in the GOAL, return {"action":"failed","message":"Please say your phone number / email / password to enter it"}.
+7. For YouTube search: fill the search bar with the query, press Enter. After results load, scroll and click the best matching video title.
 8. For Flipkart/Amazon add-to-cart: look for "Add to Cart" or "Buy Now" buttons.
 9. Use element_index from the numbered list — do NOT guess CSS selectors.
 10. After each fill, check if a "Next" or submit button needs to be clicked.
-11. If the goal is clearly complete (cart updated, order placed, product found, video playing), return done.
-12. Never loop on the same action twice — if something failed, try a different approach.
+11. If the goal is clearly complete (cart updated, order placed, product found, video playing, logged in), return done.
+12. Never repeat the same action more than once — if something failed, try a completely different approach or return failed.
 13. scroll direction: "down" to scroll down, "up" to scroll up. amount is pixels (default 400).
 `.trim();
 
@@ -123,7 +126,14 @@ async function executeStep(page, handles, step) {
       break;
     }
     case 'press': {
-      await page.keyboard.press(key || 'Enter');
+      // For single chars (OTP digits), use keyboard.type so they register in React inputs
+      const k = key || 'Enter';
+      if (k.length === 1) {
+        await page.keyboard.type(k, { delay: 80 });
+      } else {
+        await page.keyboard.press(k);
+      }
+      await page.waitForTimeout(120); // let focus auto-advance to next OTP box
       break;
     }
     case 'wait': {
