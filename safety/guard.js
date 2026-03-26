@@ -9,6 +9,12 @@ const logger = require('../logger');
 
 const ALLOWED_ACTIONS = [
   {
+    name: 'smart_act',
+    description: 'PREFERRED for any page interaction. Takes a screenshot + reads DOM, uses AI vision to understand the page and execute the exact steps needed. Use for login, filling forms, clicking buttons, entering OTP, any interaction with the current page.',
+    params: { command: 'string — the exact thing the user wants to do on the current page, e.g. "enter phone number 6299291331", "click Request OTP", "fill the login form"' },
+    destructive: false,
+  },
+  {
     name: 'new_tab',
     description: 'Open a new browser tab, optionally at a URL or site name. Use when user says "new tab", "open in new tab", "open a new tab with X".',
     params: { url: 'string — optional URL or site name to open in the new tab' },

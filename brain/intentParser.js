@@ -39,13 +39,12 @@ ${actionList}
 
 Rules:
 1. Output ONLY a single valid JSON object — no markdown, no explanation.
-2. Always pick the CLOSEST matching action. Never return "unknown" if any action is a reasonable match.
-3. If the command has multiple steps (e.g. "open instagram and log in"), pick only the FIRST step.
-4. For "open X" / "go to X" / "X kholo" → use open_website with site=X.
-5. For "enter/type/fill my X" → use fill_input with field=X and value=the number/text.
-6. For "click X" / "press X" / "X pe click karo" → use click_button with text=X.
-7. Extract values the user mentions — phone numbers, emails, names, passwords, search terms.
-8. Never return "unknown" unless the command is completely unrelated to browser use.
+2. For NAVIGATION commands ("open X", "go to X", "X kholo", "new tab") → use open_website or new_tab.
+3. For EVERYTHING ELSE that involves interacting with the current page → use smart_act with command=the user's full intent.
+   This includes: entering text, clicking buttons, logging in, filling forms, entering OTP, scrolling, anything on the page.
+4. smart_act is the PREFERRED action for any page interaction — it reads the DOM and figures out the steps itself.
+5. Extract values the user mentions — phone numbers, emails, names, passwords — and include them in the command param.
+6. Never return "unknown".
 
 Output schema:
 { "action": "<action_name>", "params": { ... } }
