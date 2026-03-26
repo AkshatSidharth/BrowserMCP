@@ -172,7 +172,7 @@ async function executeDesktopStep(step) {
       break;
     }
 
-
+    case 'open_settings_panel': {
       // Open a specific macOS System Settings panel via URL scheme — no Accessibility needed
       const PANEL_URLS = {
         wifi:        'x-apple.systempreferences:com.apple.wifi-settings-extension',
