@@ -112,6 +112,33 @@ async function getActivePage() {
 }
 
 /**
+ * Find an already-open tab whose URL contains the given hostname/pattern.
+ * Returns the page or null.
+ */
+async function findOpenTab(urlPattern) {
+  await connectBrowser();
+  const contexts = _browser.contexts();
+  for (const ctx of contexts) {
+    for (const pg of ctx.pages()) {
+      if (!pg.isClosed() && pg.url().toLowerCase().includes(urlPattern.toLowerCase())) {
+        return pg;
+      }
+    }
+  }
+  return null;
+}
+
+/**
+ * Switch to an existing tab (bring to front + set as active).
+ */
+async function switchToTab(page) {
+  _page = page;
+  await page.bringToFront().catch(() => {});
+  logger.info(`Switched to tab: ${page.url()}`);
+  return page;
+}
+
+/**
  * Navigate the active page to a URL.
  */
 async function navigateTo(url) {
@@ -140,4 +167,4 @@ function setActivePage(page) {
   _page = page;
 }
 
-module.exports = { connectBrowser, getActivePage, setActivePage, navigateTo, disconnect, LAUNCH_MODE };
+module.exports = { connectBrowser, getActivePage, setActivePage, findOpenTab, switchToTab, navigateTo, disconnect, LAUNCH_MODE };

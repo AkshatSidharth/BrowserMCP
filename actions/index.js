@@ -32,6 +32,7 @@ const registry = {
   take_screenshot: require('./takeScreenshot'),
   click_captcha:   require('./clickCaptcha'),
   desktop_act:     require('./desktopAct'),
+  close_tab:       require('./closeTab'),
 };
 
 /**

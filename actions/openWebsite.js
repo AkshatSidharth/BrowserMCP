@@ -1,6 +1,6 @@
 'use strict';
 
-const { navigateTo } = require('../browser/connect');
+const { navigateTo, findOpenTab, switchToTab } = require('../browser/connect');
 const logger = require('../logger');
 
 // Common site name → URL mapping so users can say "open Instagram" naturally
@@ -40,6 +40,19 @@ async function openWebsite(_page, params) {
 
   const key = site.toLowerCase().trim().replace(/\.(com|org|net|io)$/, '');
   const url  = SITE_MAP[key] || SITE_MAP[key.replace(/\s+/g, '')] || (site.includes('.') ? `https://${site}` : `https://www.${site}.com`);
+
+  // Extract hostname to check if this site is already open in a tab
+  let hostname = '';
+  try { hostname = new URL(url).hostname.replace(/^www\./, ''); } catch {}
+
+  if (hostname) {
+    const existing = await findOpenTab(hostname);
+    if (existing) {
+      await switchToTab(existing);
+      logger.info(`Switched to existing tab: ${existing.url()}`);
+      return { success: true, message: `Switched to existing ${site} tab.` };
+    }
+  }
 
   logger.info(`Opening ${site} → ${url}`);
   await navigateTo(url);
