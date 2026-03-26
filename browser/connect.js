@@ -133,4 +133,11 @@ async function disconnect() {
   }
 }
 
-module.exports = { connectBrowser, getActivePage, navigateTo, disconnect, LAUNCH_MODE };
+/**
+ * Explicitly set the active page (called when a new tab is opened).
+ */
+function setActivePage(page) {
+  _page = page;
+}
+
+module.exports = { connectBrowser, getActivePage, setActivePage, navigateTo, disconnect, LAUNCH_MODE };

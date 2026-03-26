@@ -22,6 +22,11 @@ const SITE_MAP = {
   slack:      'https://app.slack.com',
   kapture:    'https://app.kapturecrm.com',
   crm:        'https://app.kapturecrm.com',
+  'kapture cx': 'https://app.kapturecrm.com',
+  'kapture crm':'https://app.kapturecrm.com',
+  'capture cx': 'https://app.kapturecrm.com',
+  'capture crm':'https://app.kapturecrm.com',
+  kapturecrm:  'https://app.kapturecrm.com',
 };
 
 /**
@@ -34,7 +39,7 @@ async function openWebsite(_page, params) {
   if (!site) throw new Error('"site" param required.');
 
   const key = site.toLowerCase().trim().replace(/\.(com|org|net|io)$/, '');
-  const url  = SITE_MAP[key] || (site.includes('.') ? `https://${site}` : `https://www.${site}.com`);
+  const url  = SITE_MAP[key] || SITE_MAP[key.replace(/\s+/g, '')] || (site.includes('.') ? `https://${site}` : `https://www.${site}.com`);
 
   logger.info(`Opening ${site} → ${url}`);
   await navigateTo(url);

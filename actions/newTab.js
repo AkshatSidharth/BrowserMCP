@@ -1,6 +1,6 @@
 'use strict';
 
-const { connectBrowser, LAUNCH_MODE } = require('../browser/connect');
+const { connectBrowser, setActivePage, LAUNCH_MODE } = require('../browser/connect');
 const logger = require('../logger');
 
 /**
@@ -21,6 +21,7 @@ async function newTab(_page, params) {
   }
 
   const page = await context.newPage();
+  setActivePage(page); // all subsequent commands go to this tab
   logger.info(`Opened new tab`);
 
   if (url) {
