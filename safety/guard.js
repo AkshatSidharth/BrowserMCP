@@ -9,6 +9,27 @@ const logger = require('../logger');
 
 const ALLOWED_ACTIONS = [
   {
+    name: 'open_website',
+    description: 'Open any website by name or URL. Use for "open Instagram", "go to Facebook", "open reddit" etc.',
+    params: { site: 'string — site name like "instagram", "reddit" or full URL' },
+    destructive: false,
+  },
+  {
+    name: 'fill_input',
+    description: 'Find an input field on the current page by its label/description and fill it with a value. Use for "enter my phone number", "type my email", "fill password field".',
+    params: {
+      field: 'string — description of the field, e.g. "phone number", "email", "password", "username"',
+      value: 'string — the value to type into the field',
+    },
+    destructive: false,
+  },
+  {
+    name: 'click_button',
+    description: 'Find and click any button or link on the current page by its visible text. Use for "click next", "click log in", "click submit", "click send".',
+    params: { text: 'string — visible text of the button/link to click, e.g. "Next", "Log in", "Send OTP"' },
+    destructive: false,
+  },
+  {
     name: 'open_youtube',
     description: 'Open YouTube homepage in the browser.',
     params: {},

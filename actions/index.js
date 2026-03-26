@@ -10,10 +10,13 @@
  */
 
 const registry = {
+  open_website:         require('./openWebsite'),
   open_youtube:         require('./openYoutube'),
   open_youtube_channel: require('./openYoutubeChannel'),
   play_youtube_video:   require('./playYoutubeVideo'),
   login_to_website:     require('./loginToWebsite'),
+  fill_input:           require('./fillInput'),
+  click_button:         require('./clickButton'),
   search_google:   require('./searchGoogle'),
   navigate_to:     require('./navigateTo'),
   open_crm:        require('./openCrm'),
