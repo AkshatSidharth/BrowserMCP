@@ -65,7 +65,7 @@ async function parseIntent(text) {
   const response = await getClient().chat.completions.create({
     model: LLM_MODEL(),
     temperature: 0,            // Deterministic output
-    max_tokens: 256,
+    max_completion_tokens: 256,
     response_format: { type: 'json_object' },
     messages: [
       { role: 'system', content: buildSystemPrompt() },
