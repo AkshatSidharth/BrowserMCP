@@ -56,6 +56,16 @@ async function getNextStep(goal, domText, base64, history) {
     ? `\nSteps completed so far:\n${history.map((h, i) => `${i + 1}. ${h}`).join('\n')}`
     : '\nNo steps taken yet.';
 
+  const goalText = `GOAL: ${goal}${historyText}\n\nCurrent page:\n${domText}\n\nWhat is the single next action to take?`;
+
+  // If screenshot is unavailable (e.g. page stuck on font loading), use text-only prompt
+  const userContent = base64
+    ? [
+        { type: 'image_url', image_url: { url: `data:image/jpeg;base64,${base64}`, detail: 'low' } },
+        { type: 'text', text: goalText },
+      ]
+    : goalText;
+
   const response = await getClient().chat.completions.create({
     model: process.env.LLM_MODEL || 'gpt-4o',
     temperature: 0,
@@ -63,19 +73,7 @@ async function getNextStep(goal, domText, base64, history) {
     response_format: { type: 'json_object' },
     messages: [
       { role: 'system', content: SYSTEM_PROMPT },
-      {
-        role: 'user',
-        content: [
-          {
-            type: 'image_url',
-            image_url: { url: `data:image/jpeg;base64,${base64}`, detail: 'low' },
-          },
-          {
-            type: 'text',
-            text: `GOAL: ${goal}${historyText}\n\nCurrent page:\n${domText}\n\nWhat is the single next action to take?`,
-          },
-        ],
-      },
+      { role: 'user', content: userContent },
     ],
   });
 
@@ -160,12 +158,11 @@ async function runAgentLoop(page, goal, onStep) {
 
     const ctx = await extractPageContext(page);
     const domText = formatContext(ctx);
-    const screenshotBuf = await page.screenshot({ type: 'jpeg', quality: 50, fullPage: false, timeout: 10000 }).catch(() => null);
-    if (!screenshotBuf) {
-      logger.warn('Page screenshot timed out — skipping step');
-      return { success: false, message: 'Page screenshot timed out. The page may be stuck or unloaded.' };
-    }
-    const base64 = screenshotBuf.toString('base64');
+    // Screenshot is best-effort — YouTube and some SPAs hang on font loading.
+    // If it times out, continue in DOM-only mode (no image sent to GPT-4o).
+    const screenshotBuf = await page.screenshot({ type: 'jpeg', quality: 50, fullPage: false, timeout: 6000 }).catch(() => null);
+    const base64 = screenshotBuf ? screenshotBuf.toString('base64') : null;
+    if (!base64) logger.warn(`Step ${stepCount}: screenshot unavailable, using DOM-only mode`);
 
     logger.debug(`Step ${stepCount} — page: ${ctx.url} — elements: ${ctx.elements.length}`);
 

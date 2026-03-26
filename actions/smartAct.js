@@ -9,13 +9,45 @@ const logger = require('../logger');
  * Runs the full agentic loop — reads page, acts, re-reads, acts again —
  * until the goal is complete or it can't proceed.
  */
+// YouTube search query extractor
+function extractYoutubeQuery(command) {
+  const patterns = [
+    /(?:search|look|find|play|watch)\s+(?:for\s+)?(?:a\s+)?(.+?)\s+(?:on\s+youtube|video)/i,
+    /(?:on\s+youtube|youtube\s+(?:search|pe|par|mein))\s+(.+)/i,
+    /youtube\s+(?:pe|par|mein)\s+(.+)/i,
+  ];
+  for (const re of patterns) {
+    const m = command.match(re);
+    if (m) return m[1].trim();
+  }
+  return null;
+}
+
 async function smartAct(_page, params, onStep) {
   const { command } = params;
   if (!command) throw new Error('"command" param required.');
 
   const page = await getActivePage();
-  await page.waitForLoadState('domcontentloaded').catch(() => {});
 
+  // For YouTube search, skip the search-bar interaction and navigate directly
+  // to search results URL — avoids the font-loading screenshot hang.
+  const currentUrl = page.url() || '';
+  const isYoutubeGoal = /youtube/i.test(command);
+  if (isYoutubeGoal) {
+    const query = extractYoutubeQuery(command);
+    if (query) {
+      if (onStep) onStep(`🔍 Searching YouTube for "${query}"`);
+      await page.goto(`https://www.youtube.com/results?search_query=${encodeURIComponent(query)}`, {
+        waitUntil: 'domcontentloaded', timeout: 20000,
+      }).catch(() => {});
+      await page.waitForTimeout(1500);
+    } else if (!currentUrl.includes('youtube.com')) {
+      await page.goto('https://www.youtube.com', { waitUntil: 'domcontentloaded', timeout: 20000 }).catch(() => {});
+      await page.waitForTimeout(1500);
+    }
+  }
+
+  await page.waitForLoadState('domcontentloaded', { timeout: 5000 }).catch(() => {});
   return runAgentLoop(page, command, onStep);
 }
 
