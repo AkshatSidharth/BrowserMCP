@@ -1,13 +1,13 @@
 'use strict';
 
 require('dotenv').config();
-const { OpenAI }      = require('openai');
-const { exec }        = require('child_process');
-const { promisify }   = require('util');
-const fs              = require('fs');
-const os              = require('os');
-const path            = require('path');
-const logger          = require('../logger');
+const { OpenAI }    = require('openai');
+const { exec }      = require('child_process');
+const { promisify } = require('util');
+const fs            = require('fs');
+const os            = require('os');
+const path          = require('path');
+const logger        = require('../logger');
 
 const execAsync = promisify(exec);
 
@@ -17,33 +17,33 @@ const getClient = () => {
   return _openai;
 };
 
-const MAX_STEPS = 15;
+const MAX_STEPS = 20;
 
-// ─── Screenshot of full desktop ───────────────────────────────────────────────
+// ─── Screenshot + dimensions ──────────────────────────────────────────────────
 async function takeDesktopScreenshot() {
   const outPath = path.join(os.tmpdir(), `desktop-${Date.now()}.png`);
-  const platform = process.platform;
 
-  if (platform === 'darwin') {
+  if (process.platform === 'darwin') {
     await execAsync(`screencapture -x "${outPath}"`);
-  } else if (platform === 'linux') {
-    // Try scrot, then import (ImageMagick), then xwd
-    try {
-      await execAsync(`scrot "${outPath}"`);
-    } catch {
-      try {
-        await execAsync(`import -window root "${outPath}"`);
-      } catch {
-        throw new Error('No screenshot tool found. Install scrot: sudo apt install scrot');
-      }
-    }
+  } else if (process.platform === 'linux') {
+    try { await execAsync(`scrot "${outPath}"`); }
+    catch { await execAsync(`import -window root "${outPath}"`); }
   } else {
-    throw new Error('Desktop screenshots not supported on this platform yet.');
+    throw new Error('Unsupported platform for desktop screenshot.');
   }
 
-  const buf    = fs.readFileSync(outPath);
+  // Get pixel dimensions (needed so GPT-4o knows coordinate space)
+  let width = 1920, height = 1080;
+  try {
+    const { stdout } = await execAsync(`sips -g pixelWidth -g pixelHeight "${outPath}"`);
+    const w = stdout.match(/pixelWidth:\s+(\d+)/);
+    const h = stdout.match(/pixelHeight:\s+(\d+)/);
+    if (w && h) { width = parseInt(w[1]); height = parseInt(h[1]); }
+  } catch { /* sips not available on Linux, use defaults */ }
+
+  const base64 = fs.readFileSync(outPath).toString('base64');
   fs.unlink(outPath, () => {});
-  return buf.toString('base64');
+  return { base64, width, height };
 }
 
 // ─── Execute one desktop step ─────────────────────────────────────────────────
@@ -53,20 +53,50 @@ async function executeDesktopStep(step) {
 
   switch (type) {
 
-    case 'applescript': {
-      // Run arbitrary AppleScript — most powerful option on Mac
-      const escaped = step.code.replace(/"/g, '\\"');
-      const { stdout, stderr } = await execAsync(`osascript -e "${escaped}"`).catch(e => ({ stdout: '', stderr: e.message }));
-      if (stderr && !stderr.includes('Warning')) logger.warn(`AppleScript stderr: ${stderr}`);
-      return stdout.trim();
+    case 'click_at': {
+      // Click at pixel coordinates on screen — requires Accessibility permission
+      const { x, y } = step;
+      const script = `tell application "System Events" to click at {${x}, ${y}}`;
+      await execAsync(`osascript -e '${script}'`);
+      break;
+    }
+
+    case 'double_click_at': {
+      const { x, y } = step;
+      const script = `tell application "System Events" to double click at {${x}, ${y}}`;
+      await execAsync(`osascript -e '${script}'`);
+      break;
+    }
+
+    case 'right_click_at': {
+      const { x, y } = step;
+      // cliclick is more reliable for right-click; fall back to AppleScript
+      await execAsync(`cliclick rc:${x},${y}`).catch(() =>
+        execAsync(`osascript -e 'tell application "System Events" to right click at {${x}, ${y}}'`)
+      );
+      break;
+    }
+
+    case 'scroll_at': {
+      // scroll_direction: "up"|"down", amount: number of ticks
+      const { x, y, direction = 'down', amount = 3 } = step;
+      const delta = direction === 'up' ? amount : -amount;
+      await execAsync(`osascript -e 'tell application "System Events" to scroll at {${x}, ${y}} by ${delta}'`)
+        .catch(() => logger.warn('scroll_at not supported on this macOS version'));
+      break;
     }
 
     case 'applescript_file': {
-      // Write AppleScript to a temp file and run it (for multi-line scripts)
       const tmpFile = path.join(os.tmpdir(), `mcp-script-${Date.now()}.scpt`);
       fs.writeFileSync(tmpFile, step.code);
       const { stdout } = await execAsync(`osascript "${tmpFile}"`).catch(e => ({ stdout: e.message }));
       fs.unlink(tmpFile, () => {});
+      return stdout.trim();
+    }
+
+    case 'applescript': {
+      const escaped = step.code.replace(/\\/g, '\\\\').replace(/'/g, "'\\''");
+      const { stdout } = await execAsync(`osascript -e '${escaped}'`).catch(e => ({ stdout: e.message }));
       return stdout.trim();
     }
 
@@ -76,31 +106,37 @@ async function executeDesktopStep(step) {
     }
 
     case 'type_text': {
-      // Type text at the current cursor position using AppleScript
       const safe = step.text.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
       await execAsync(`osascript -e 'tell application "System Events" to keystroke "${safe}"'`);
       break;
     }
 
     case 'key_combo': {
-      // Press a keyboard shortcut e.g. {"keys": ["command", "return"]}
-      // or {"keys": ["command", "shift", "n"]}
       const keys = step.keys || [];
-      const last = keys[keys.length - 1];
-      const mods = keys.slice(0, -1).map(k => `${k} down`).join(', ');
-      const usingClause = mods ? ` using {${mods}}` : '';
-      await execAsync(`osascript -e 'tell application "System Events" to keystroke "${last}"${usingClause}'`);
+      const last  = keys[keys.length - 1];
+      const mods  = keys.slice(0, -1).map(k => `${k} down`).join(', ');
+      const using = mods ? ` using {${mods}}` : '';
+      await execAsync(`osascript -e 'tell application "System Events" to keystroke "${last}"${using}'`);
       break;
     }
 
     case 'open_app': {
-      await execAsync(`open -a "${step.app}"`);
-      await new Promise(r => setTimeout(r, step.wait_ms || 1500));
+      await execAsync(`open -a "${step.app}"`).catch(async () => {
+        // Try without -a in case it's a file/URL handler
+        await execAsync(`open "${step.app}"`);
+      });
+      await new Promise(r => setTimeout(r, step.wait_ms || 1800));
       break;
     }
 
     case 'open_url': {
       await execAsync(`open "${step.url}"`);
+      break;
+    }
+
+    case 'focus_app': {
+      await execAsync(`osascript -e 'tell application "${step.app}" to activate'`);
+      await new Promise(r => setTimeout(r, 500));
       break;
     }
 
@@ -115,88 +151,105 @@ async function executeDesktopStep(step) {
 }
 
 // ─── System prompt ────────────────────────────────────────────────────────────
-const SYSTEM_PROMPT = `
-You are a macOS desktop automation agent. You see a screenshot of the user's screen.
-Your job: return step-by-step JSON actions to complete the user's goal on the desktop.
+function buildSystemPrompt(width, height) {
+  // On Retina Macs the screenshot is 2x physical pixels but System Events
+  // uses LOGICAL coordinates (half the physical). Tell GPT-4o about this.
+  const isRetina = width > 2000;
+  const logicalW = isRetina ? Math.round(width  / 2) : width;
+  const logicalH = isRetina ? Math.round(height / 2) : height;
+  const retinaNote = isRetina
+    ? `IMPORTANT: This is a Retina display. Screenshot is ${width}x${height} physical pixels but logical coordinates are ${logicalW}x${logicalH}. ALL x,y coordinates you return MUST be in LOGICAL pixels (divide screenshot pixel position by 2).`
+    : `Screen logical size: ${width}x${height}. Use these pixel coordinates directly for click_at.`;
+
+  return `
+You are a macOS desktop vision agent. You see a real screenshot of the user's screen.
+Your job: look at what is visible on screen and return exact JSON steps to complete the user's goal.
+
+${retinaNote}
 
 Available step types:
-- applescript_file: run multi-line AppleScript (PREFERRED for complex app control)
-  → {"type":"applescript_file", "code":"tell application \\"Mail\\"\\n...\\nend tell", "description":"..."}
-- shell: run a terminal command
-  → {"type":"shell", "command":"open -a Notes", "description":"..."}
-- type_text: type text at current cursor (after focusing a field)
-  → {"type":"type_text", "text":"Hello World", "description":"..."}
+- click_at: click at a pixel position on screen — PREFERRED for anything visible on screen
+  → {"type":"click_at", "x":350, "y":240, "description":"Click Wi-Fi in sidebar"}
+- double_click_at: double-click at position
+  → {"type":"double_click_at", "x":200, "y":300, "description":"Open folder"}
+- right_click_at: right-click at position
+  → {"type":"right_click_at", "x":200, "y":300, "description":"Right-click desktop"}
+- scroll_at: scroll at position
+  → {"type":"scroll_at", "x":500, "y":400, "direction":"down", "amount":3, "description":"Scroll down"}
+- type_text: type text at current cursor
+  → {"type":"type_text", "text":"Hello", "description":"Type search query"}
 - key_combo: keyboard shortcut
-  → {"type":"key_combo", "keys":["command","return"], "description":"Send email"}
-- open_app: open a Mac application
-  → {"type":"open_app", "app":"Mail", "wait_ms":2000, "description":"Open Mail app"}
+  → {"type":"key_combo", "keys":["command","space"], "description":"Open Spotlight"}
+- open_app: open a Mac application by name
+  → {"type":"open_app", "app":"System Settings", "wait_ms":2000, "description":"Open System Settings"}
+- focus_app: bring an app to front
+  → {"type":"focus_app", "app":"Finder", "description":"Focus Finder"}
 - open_url: open a URL in default browser
-  → {"type":"open_url", "url":"https://mail.google.com/mail/u/0/#compose", "description":"..."}
-- wait: pause for a moment
-  → {"type":"wait", "ms":1500, "description":"Wait for app to open"}
-- done: task complete
-  → {"type":"done", "message":"..."}
-- failed: cannot complete, explain why
-  → {"type":"failed", "message":"..."}
+  → {"type":"open_url", "url":"https://mail.google.com/mail/u/0/#compose", "description":"Open Gmail compose"}
+- applescript_file: run multi-line AppleScript for complex app control
+  → {"type":"applescript_file", "code":"tell application \\"Mail\\"\\n...\\nend tell", "description":"..."}
+- shell: run a shell command
+  → {"type":"shell", "command":"open -a 'System Settings'", "description":"..."}
+- wait: pause
+  → {"type":"wait", "ms":1500, "description":"Wait for app to load"}
+- done: goal achieved
+  → {"type":"done", "message":"Opened System Settings Wi-Fi panel"}
+- failed: cannot complete
+  → {"type":"failed", "message":"reason"}
 
-Rules:
-1. Output ONLY valid JSON: {"steps": [...]}
-2. For email/compose tasks, prefer opening Gmail in browser via open_url — it's simpler and more reliable than Mail.app AppleScript.
-3. For Mail.app, use applescript_file with proper multi-line AppleScript.
-4. For typing into apps, first focus the app/field, then use type_text.
-5. For keyboard shortcuts: command=command, shift=shift, option=option, control=control.
-6. Be specific — if user says "write a mail to X about Y", compose with To, Subject, Body all filled.
-7. Keep scripts short and reliable. Prefer shell commands for simple tasks.
+Strategy:
+1. Look at the screenshot. If you can see the target element (button, menu item, icon, input field) → use click_at with its exact coordinates.
+2. If the target app is not open yet → use open_app first, then wait, then click_at on the UI element in the next iteration.
+3. For System Settings panels: open_app "System Settings", wait 2000ms, then click_at on the correct sidebar item.
+4. For typing: click_at on the input field first, then type_text.
+5. For email/compose: prefer open_url to Gmail compose page — it's simpler than Mail.app.
+6. Return ONE logical sequence of steps. Be precise with coordinates — look carefully at the screenshot.
 
-Common AppleScript patterns:
-- Open Mail compose: tell app "Mail" → make new outgoing message
-- Open Notes and type: tell app "Notes" → make new note → set body
-- Focus app: tell app "X" to activate
-
-Opening apps strategy:
-- First try open_app with the app name. If it might be a PWA (Gmail, WhatsApp, Slack etc.),
-  also try the exact PWA name the user may have installed (e.g. "Gmail", "WhatsApp").
-- If open_app fails or app not found, fall back to open_url in browser.
-- For Gmail PWA: try open_app "Gmail" first; if fails, open_url "https://mail.google.com"
-- For WhatsApp: try open_app "WhatsApp" first; if fails, open_url "https://web.whatsapp.com"
+Output ONLY valid JSON: {"steps": [...]}
 `.trim();
+}
 
 // ─── Main desktop agent loop ──────────────────────────────────────────────────
 async function runDesktopAgent(goal, onStep) {
   logger.info(`Desktop agent: "${goal}"`);
 
-  const history = [];
+  const history  = [];
+  let   lastDims = { width: 1920, height: 1080 };
 
   for (let i = 0; i < MAX_STEPS; i++) {
-    // 1. Try screenshot — but don't fail if Screen Recording permission is missing
+    // 1. Take screenshot (with dimensions)
     let base64 = null;
     try {
-      base64 = await takeDesktopScreenshot();
+      const shot = await takeDesktopScreenshot();
+      base64     = shot.base64;
+      lastDims   = { width: shot.width, height: shot.height };
     } catch (err) {
-      logger.warn(`Desktop screenshot skipped: ${err.message}`);
-      if (onStep && i === 0) onStep('⚠ No screen capture permission — running in text-only mode');
+      logger.warn(`Screenshot failed: ${err.message}`);
+      if (onStep && i === 0) onStep('⚠ No Screen Recording permission — running in text-only mode. Grant it in System Settings → Privacy & Security → Screen Recording.');
     }
 
-    // 2. Ask GPT-4o (with or without screenshot)
+    // 2. Build prompt
     const historyText = history.length
-      ? `\nDone so far:\n${history.map((h, j) => `${j + 1}. ${h}`).join('\n')}`
+      ? `\nSteps completed so far:\n${history.map((h, j) => `${j + 1}. ${h}`).join('\n')}`
       : '';
+    const goalText = `GOAL: ${goal}${historyText}\n\nLook at the screenshot and return the next steps.`;
 
     const userContent = base64
       ? [
-          { type: 'image_url', image_url: { url: `data:image/png;base64,${base64}`, detail: 'low' } },
-          { type: 'text', text: `GOAL: ${goal}${historyText}\n\nReturn all steps needed to complete this goal.` },
+          { type: 'image_url', image_url: { url: `data:image/png;base64,${base64}`, detail: 'high' } },
+          { type: 'text', text: goalText },
         ]
-      : `GOAL: ${goal}${historyText}\n\nReturn all steps needed to complete this goal. (No screenshot available — use your knowledge of macOS to determine the steps.)`;
+      : `${goalText}\n\n(No screenshot — use macOS knowledge to plan steps without visual context.)`;
 
+    // 3. Ask GPT-4o
     const response = await getClient().chat.completions.create({
       model: process.env.LLM_MODEL || 'gpt-4o',
       temperature: 0,
-      max_completion_tokens: 1024,
+      max_completion_tokens: 1500,
       response_format: { type: 'json_object' },
       messages: [
-        { role: 'system', content: SYSTEM_PROMPT },
-        { role: 'user', content: userContent },
+        { role: 'system', content: buildSystemPrompt(lastDims.width, lastDims.height) },
+        { role: 'user',   content: userContent },
       ],
     });
 
@@ -210,7 +263,7 @@ async function runDesktopAgent(goal, onStep) {
     const steps = plan.steps || [];
     if (!steps.length) return { success: false, message: plan.message || 'No steps returned.' };
 
-    // 3. Execute all steps in this plan
+    // 4. Execute steps
     for (const step of steps) {
       if (step.type === 'done') {
         if (onStep) onStep(`✓ ${step.message}`);
@@ -223,20 +276,20 @@ async function runDesktopAgent(goal, onStep) {
 
       try {
         const result = await executeDesktopStep(step);
-        const desc = step.description || step.type;
+        const desc   = step.description || step.type;
         history.push(desc);
         if (onStep) onStep(`⚡ ${desc}`);
-        logger.info(`Desktop step done: ${desc}${result ? ` → ${result}` : ''}`);
+        logger.info(`Desktop step OK: ${desc}${result ? ` → ${result}` : ''}`);
       } catch (err) {
         logger.warn(`Desktop step failed: ${err.message}`);
-        if (onStep) onStep(`⚠ ${step.description} failed: ${err.message}`);
+        if (onStep) onStep(`⚠ ${step.description || step.type} failed: ${err.message}`);
       }
 
-      await new Promise(r => setTimeout(r, 400));
+      // Small pause between steps so UI has time to react
+      await new Promise(r => setTimeout(r, 500));
     }
 
-    // If the plan had no done/failed, treat it as complete after executing all steps
-    return { success: true, message: `Done: ${history.join(' → ')}`, steps: history };
+    // If no done/failed step returned, loop and re-screenshot to verify progress
   }
 
   return { success: false, message: 'Max steps reached.', steps: history };
