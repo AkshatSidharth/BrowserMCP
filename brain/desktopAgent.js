@@ -152,6 +152,13 @@ Common AppleScript patterns:
 - Open Mail compose: tell app "Mail" → make new outgoing message
 - Open Notes and type: tell app "Notes" → make new note → set body
 - Focus app: tell app "X" to activate
+
+Opening apps strategy:
+- First try open_app with the app name. If it might be a PWA (Gmail, WhatsApp, Slack etc.),
+  also try the exact PWA name the user may have installed (e.g. "Gmail", "WhatsApp").
+- If open_app fails or app not found, fall back to open_url in browser.
+- For Gmail PWA: try open_app "Gmail" first; if fails, open_url "https://mail.google.com"
+- For WhatsApp: try open_app "WhatsApp" first; if fails, open_url "https://web.whatsapp.com"
 `.trim();
 
 // ─── Main desktop agent loop ──────────────────────────────────────────────────

@@ -39,15 +39,15 @@ ${actionList}
 
 Rules:
 1. Output ONLY a single valid JSON object — no markdown, no explanation.
-2. For NAVIGATION — websites, web apps, or URLs ("open Gmail", "open Instagram", "open YouTube", "go to X", "X kholo", "new tab", "open gmail app") → use open_website or new_tab.
-   Web services like Gmail, YouTube, Instagram, Flipkart, WhatsApp, Reddit, LinkedIn, Slack, Notion, GitHub are WEBSITES — always use open_website, never desktop_act.
-3. For NATIVE DESKTOP app actions — Mac apps that are NOT websites ("open Notes", "open Calendar", "open Finder", "open TextEdit", "write a mail using Mail app", "press keyboard shortcut", "type something on desktop") → use desktop_act with command=the user's full request.
-4. For COMPOSE/EMAIL tasks ("write an email to X", "compose email to X", "send a mail") → use desktop_act so the agent can fill in To, Subject, Body.
-5. For EVERYTHING ELSE that involves interacting with the current browser page → use smart_act with command=the user's full intent.
+2. If the user says "open X app" or "launch X app" or "X app kholdo" (explicitly says "app") → use desktop_act with command=the full request, so the OS launches the installed app.
+3. For plain NAVIGATION without "app" — websites, web URLs ("open Gmail", "open Instagram", "go to YouTube", "X kholo", "new tab") → use open_website or new_tab.
+4. For NATIVE DESKTOP actions — ("open Notes", "open Calendar", "open Finder", "write a mail using Mail app", "press keyboard shortcut", "type something on desktop") → use desktop_act.
+5. For COMPOSE/EMAIL tasks ("write an email to X", "compose email to X", "send a mail") → use desktop_act so the agent can fill in To, Subject, Body.
+6. For EVERYTHING ELSE that involves interacting with the current browser page → use smart_act with command=the user's full intent.
    This includes: entering text, clicking buttons, logging in, filling forms, entering OTP, scrolling, anything on the page.
-6. smart_act is the PREFERRED action for any browser page interaction — it reads the DOM and figures out the steps itself.
-7. Extract values the user mentions — phone numbers, emails, names, passwords — and include them in the command param.
-8. Never return "unknown".
+7. smart_act is the PREFERRED action for any browser page interaction — it reads the DOM and figures out the steps itself.
+8. Extract values the user mentions — phone numbers, emails, names, passwords — and include them in the command param.
+9. Never return "unknown".
 
 Output schema:
 { "action": "<action_name>", "params": { ... } }
