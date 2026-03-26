@@ -10,8 +10,14 @@ const logger = require('../logger');
 const ALLOWED_ACTIONS = [
   {
     name: 'open_youtube',
-    description: 'Open YouTube in the browser.',
+    description: 'Open YouTube homepage in the browser.',
     params: {},
+    destructive: false,
+  },
+  {
+    name: 'open_youtube_channel',
+    description: 'Open a specific YouTube channel by name or handle.',
+    params: { channel: 'string — channel name or @handle, e.g. "whatthelogic" or "@MrBeast"' },
     destructive: false,
   },
   {

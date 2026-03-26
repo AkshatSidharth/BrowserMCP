@@ -10,7 +10,8 @@
  */
 
 const registry = {
-  open_youtube:    require('./openYoutube'),
+  open_youtube:         require('./openYoutube'),
+  open_youtube_channel: require('./openYoutubeChannel'),
   search_google:   require('./searchGoogle'),
   navigate_to:     require('./navigateTo'),
   open_crm:        require('./openCrm'),
