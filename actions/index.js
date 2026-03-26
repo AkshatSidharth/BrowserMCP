@@ -31,6 +31,7 @@ const registry = {
   reload_page:     require('./reloadPage'),
   take_screenshot: require('./takeScreenshot'),
   click_captcha:   require('./clickCaptcha'),
+  desktop_act:     require('./desktopAct'),
 };
 
 /**

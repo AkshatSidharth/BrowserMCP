@@ -58,16 +58,22 @@ async function runCommand(text, onStep) {
     return { ok: false, message: `"${intent.action}" is destructive — run from CLI to confirm.`, intent };
   }
 
-  const page = await getActivePage();
-
-  // smart_act gets the onStep callback for real-time streaming
+  // desktop_act doesn't need a browser page — runs native desktop automation
   let result;
-  if (intent.action === 'smart_act') {
-    const { runAgentLoop } = require('../brain/agentLoop');
-    await page.waitForLoadState('domcontentloaded').catch(() => {});
-    result = await runAgentLoop(page, intent.params.command, onStep);
+  if (intent.action === 'desktop_act') {
+    const { runDesktopAgent } = require('../brain/desktopAgent');
+    result = await runDesktopAgent(intent.params.command, onStep);
   } else {
-    result = await executeAction(intent.action, page, intent.params);
+    const page = await getActivePage();
+
+    // smart_act gets the onStep callback for real-time streaming
+    if (intent.action === 'smart_act') {
+      const { runAgentLoop } = require('../brain/agentLoop');
+      await page.waitForLoadState('domcontentloaded').catch(() => {});
+      result = await runAgentLoop(page, intent.params.command, onStep);
+    } else {
+      result = await executeAction(intent.action, page, intent.params);
+    }
   }
 
   logger.info('Done', { action: intent.action, success: result.success });

@@ -39,12 +39,13 @@ ${actionList}
 
 Rules:
 1. Output ONLY a single valid JSON object — no markdown, no explanation.
-2. For NAVIGATION commands ("open X", "go to X", "X kholo", "new tab") → use open_website or new_tab.
-3. For EVERYTHING ELSE that involves interacting with the current page → use smart_act with command=the user's full intent.
+2. For DESKTOP actions ("write a mail", "write an email to X", "compose email", "open Notes", "open Calendar", "open an app", "type something on desktop", "press keyboard shortcut") → use desktop_act with command=the user's full request.
+3. For NAVIGATION commands ("open X", "go to X", "X kholo", "new tab") → use open_website or new_tab.
+4. For EVERYTHING ELSE that involves interacting with the current page → use smart_act with command=the user's full intent.
    This includes: entering text, clicking buttons, logging in, filling forms, entering OTP, scrolling, anything on the page.
-4. smart_act is the PREFERRED action for any page interaction — it reads the DOM and figures out the steps itself.
-5. Extract values the user mentions — phone numbers, emails, names, passwords — and include them in the command param.
-6. Never return "unknown".
+5. smart_act is the PREFERRED action for any browser page interaction — it reads the DOM and figures out the steps itself.
+6. Extract values the user mentions — phone numbers, emails, names, passwords — and include them in the command param.
+7. Never return "unknown".
 
 Output schema:
 { "action": "<action_name>", "params": { ... } }

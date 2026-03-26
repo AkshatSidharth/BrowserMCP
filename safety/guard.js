@@ -148,6 +148,12 @@ const ALLOWED_ACTIONS = [
     params: {},
     destructive: false,
   },
+  {
+    name: 'desktop_act',
+    description: 'Perform a desktop action — write an email, open a Mac app, type text, use keyboard shortcuts, run shell commands. Use when user asks to do something outside the browser: "write a mail", "open Notes", "compose email to X", "type something", "press Cmd+Space".',
+    params: { command: 'string — the full desktop task description, e.g. "write an email to john@example.com about the meeting tomorrow"' },
+    destructive: false,
+  },
 ];
 
 // Fast lookup map: action name → action config
