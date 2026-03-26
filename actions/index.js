@@ -11,6 +11,7 @@
 
 const registry = {
   open_website:         require('./openWebsite'),
+  new_tab:              require('./newTab'),
   open_youtube:         require('./openYoutube'),
   open_youtube_channel: require('./openYoutubeChannel'),
   play_youtube_video:   require('./playYoutubeVideo'),

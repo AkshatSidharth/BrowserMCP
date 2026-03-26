@@ -9,6 +9,12 @@ const logger = require('../logger');
 
 const ALLOWED_ACTIONS = [
   {
+    name: 'new_tab',
+    description: 'Open a new browser tab, optionally at a URL or site name. Use when user says "new tab", "open in new tab", "open a new tab with X".',
+    params: { url: 'string — optional URL or site name to open in the new tab' },
+    destructive: false,
+  },
+  {
     name: 'open_website',
     description: 'Open any website by name or URL. Use for "open Instagram", "go to Facebook", "open reddit" etc.',
     params: { site: 'string — site name like "instagram", "reddit" or full URL' },
