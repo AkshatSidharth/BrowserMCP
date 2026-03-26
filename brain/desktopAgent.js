@@ -168,18 +168,26 @@ async function runDesktopAgent(goal, onStep) {
   const history = [];
 
   for (let i = 0; i < MAX_STEPS; i++) {
-    // 1. Screenshot
-    let base64;
+    // 1. Try screenshot — but don't fail if Screen Recording permission is missing
+    let base64 = null;
     try {
       base64 = await takeDesktopScreenshot();
     } catch (err) {
-      return { success: false, message: `Screenshot failed: ${err.message}` };
+      logger.warn(`Desktop screenshot skipped: ${err.message}`);
+      if (onStep && i === 0) onStep('⚠ No screen capture permission — running in text-only mode');
     }
 
-    // 2. Ask GPT-4o
+    // 2. Ask GPT-4o (with or without screenshot)
     const historyText = history.length
       ? `\nDone so far:\n${history.map((h, j) => `${j + 1}. ${h}`).join('\n')}`
       : '';
+
+    const userContent = base64
+      ? [
+          { type: 'image_url', image_url: { url: `data:image/png;base64,${base64}`, detail: 'low' } },
+          { type: 'text', text: `GOAL: ${goal}${historyText}\n\nReturn all steps needed to complete this goal.` },
+        ]
+      : `GOAL: ${goal}${historyText}\n\nReturn all steps needed to complete this goal. (No screenshot available — use your knowledge of macOS to determine the steps.)`;
 
     const response = await getClient().chat.completions.create({
       model: process.env.LLM_MODEL || 'gpt-4o',
@@ -188,13 +196,7 @@ async function runDesktopAgent(goal, onStep) {
       response_format: { type: 'json_object' },
       messages: [
         { role: 'system', content: SYSTEM_PROMPT },
-        {
-          role: 'user',
-          content: [
-            { type: 'image_url', image_url: { url: `data:image/png;base64,${base64}`, detail: 'low' } },
-            { type: 'text', text: `GOAL: ${goal}${historyText}\n\nReturn all steps needed to complete this goal.` },
-          ],
-        },
+        { role: 'user', content: userContent },
       ],
     });
 
