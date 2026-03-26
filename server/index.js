@@ -69,8 +69,14 @@ async function runCommand(text, onStep) {
     // smart_act gets the onStep callback for real-time streaming
     if (intent.action === 'smart_act') {
       const { runAgentLoop } = require('../brain/agentLoop');
-      await page.waitForLoadState('domcontentloaded').catch(() => {});
-      result = await runAgentLoop(page, intent.params.command, onStep);
+      // If page is blank/unloaded, don't try to screenshot it
+      const currentUrl = page.url();
+      if (!currentUrl || currentUrl === 'about:blank') {
+        result = { success: false, message: 'No browser page is open. Say "open YouTube" or a website first.' };
+      } else {
+        await page.waitForLoadState('domcontentloaded', { timeout: 5000 }).catch(() => {});
+        result = await runAgentLoop(page, intent.params.command, onStep);
+      }
     } else {
       result = await executeAction(intent.action, page, intent.params);
     }

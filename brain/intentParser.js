@@ -39,16 +39,16 @@ ${actionList}
 
 Rules:
 1. Output ONLY a single valid JSON object — no markdown, no explanation.
-2. If the user says "open X app" or "launch X app" or "X app kholdo" (explicitly says "app") → use desktop_act with command=the full request, so the OS launches the installed app.
-3. For plain NAVIGATION without "app" — websites, web URLs ("open Gmail", "open Instagram", "go to YouTube", "X kholo", "new tab") → use open_website or new_tab.
-4. For NATIVE DESKTOP actions — ("open Notes", "open Calendar", "open Finder", "write a mail using Mail app", "press keyboard shortcut", "type something on desktop") → use desktop_act.
-5. For COMPOSE/EMAIL tasks ("write an email to X", "compose email to X", "send a mail") → use desktop_act so the agent can fill in To, Subject, Body.
-6. For SEARCH/FIND tasks on a website ("search for X on YouTube", "find a video of X", "look up X", "search X on Amazon/Flipkart") → use smart_act. The agent will navigate to the site, type in the search bar, and scroll through results like a human.
-7. For EVERYTHING ELSE that involves interacting with the current browser page → use smart_act with command=the user's full intent.
-   This includes: entering text, clicking buttons, logging in, filling forms, entering OTP, scrolling, anything on the page.
-8. smart_act is the PREFERRED action for any browser page interaction — it reads the DOM and figures out the steps itself.
-8. Extract values the user mentions — phone numbers, emails, names, passwords — and include them in the command param.
-9. Never return "unknown".
+2. If the user says "open X app" or "launch X app" or "X app kholdo" (explicitly says "app") → use desktop_act.
+3. For SYSTEM SETTINGS navigation — any mention of a macOS settings panel: wifi, bluetooth, network, accessibility, appearance, displays, sound, battery, notifications, privacy, security, wallpaper, screensaver, focus, siri, keyboard, mouse, trackpad, users, storage, airdrop, general, login items, spotlight → use desktop_act. This includes "click on accessibility", "go to wifi", "look for bluetooth", "open display settings", "take me to notifications", "go to sound" etc.
+4. For plain WEBSITE NAVIGATION — websites, web URLs ("open Gmail", "open Instagram", "go to YouTube", "new tab") → use open_website or new_tab.
+5. For NATIVE DESKTOP actions — ("open Notes", "open Calendar", "open Finder", "write a mail using Mail app", "press keyboard shortcut") → use desktop_act.
+6. For COMPOSE/EMAIL tasks ("write an email to X", "compose email to X", "send a mail") → use desktop_act.
+7. For SEARCH/FIND tasks on a website ("search for X on YouTube", "find a video of X", "search X on Amazon") → use smart_act.
+8. For EVERYTHING ELSE interacting with the current browser page → use smart_act.
+9. smart_act is ONLY for browser pages — entering text, clicking buttons in a website, logging in, filling forms, OTP.
+10. Extract values the user mentions — phone numbers, emails, names, passwords — and include in command param.
+11. Never return "unknown".
 
 Output schema:
 { "action": "<action_name>", "params": { ... } }
