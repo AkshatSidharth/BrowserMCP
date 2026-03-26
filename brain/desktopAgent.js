@@ -120,7 +120,59 @@ async function executeDesktopStep(step) {
       break;
     }
 
-    case 'open_settings_panel': {
+    case 'set_volume': {
+      // Set or adjust system volume — no Accessibility needed
+      const { value, delta } = step;
+      let script;
+      if (typeof delta === 'number') {
+        script = `set volume output volume ((output volume of (get volume settings)) + ${delta})`;
+      } else {
+        script = `set volume output volume ${Math.max(0, Math.min(100, value))}`;
+      }
+      await execAsync(`osascript -e '${script}'`);
+      break;
+    }
+
+    case 'set_brightness': {
+      // Adjust screen brightness using brightness CLI (brew install brightness)
+      // Falls back to key codes if not installed
+      const { delta = 0.1, value } = step;
+      try {
+        if (typeof value === 'number') {
+          await execAsync(`brightness ${value}`);
+        } else {
+          await execAsync(`brightness ${delta > 0 ? '+' : ''}${delta}`);
+        }
+      } catch {
+        // brightness CLI not installed — use key codes (requires Accessibility)
+        const keyCode = delta > 0 ? 144 : 145; // F2=up, F1=down
+        const times = Math.max(1, Math.round(Math.abs(delta) * 16));
+        for (let i = 0; i < times; i++) {
+          await execAsync(`osascript -e 'tell application "System Events" to key code ${keyCode}'`).catch(() => {});
+          await new Promise(r => setTimeout(r, 50));
+        }
+      }
+      break;
+    }
+
+    case 'set_keyboard_brightness': {
+      // Adjust keyboard backlight using kbbrightness CLI (brew install kbbrightness)
+      const { delta = 10 } = step;
+      try {
+        await execAsync(`kbbrightness ${delta > 0 ? '+' : ''}${delta}`);
+      } catch {
+        // fallback to key codes
+        const keyCode = delta > 0 ? 160 : 161; // F6=up, F5=down
+        const times = Math.max(1, Math.round(Math.abs(delta) / 10));
+        for (let i = 0; i < times; i++) {
+          await execAsync(`osascript -e 'tell application "System Events" to key code ${keyCode}'`).catch(() => {});
+          await new Promise(r => setTimeout(r, 50));
+        }
+      }
+      break;
+    }
+
+
       // Open a specific macOS System Settings panel via URL scheme — no Accessibility needed
       const PANEL_URLS = {
         wifi:        'x-apple.systempreferences:com.apple.wifi-settings-extension',
@@ -217,6 +269,14 @@ Available step types:
   Available panels: wifi, bluetooth, network, display, sound, battery, notifications, privacy,
   appearance, wallpaper, screensaver, accessibility, focus, storage, general, airdrop,
   users, keyboard, mouse, trackpad, siri, vpn
+- set_volume: set or adjust system volume directly (NO Accessibility needed — ALWAYS use this for volume)
+  → {"type":"set_volume", "delta":-10, "description":"Decrease volume by 10"}  (delta: positive=up, negative=down)
+  → {"type":"set_volume", "value":50, "description":"Set volume to 50%"}
+- set_brightness: adjust screen brightness (NO Accessibility if brightness CLI installed)
+  → {"type":"set_brightness", "delta":-0.1, "description":"Decrease brightness by 10%"}  (delta: positive=up, negative=down, range 0.0–1.0)
+  → {"type":"set_brightness", "value":0.5, "description":"Set brightness to 50%"}
+- set_keyboard_brightness: adjust keyboard backlight (NO Accessibility if kbbrightness CLI installed)
+  → {"type":"set_keyboard_brightness", "delta":-20, "description":"Decrease keyboard brightness"}  (delta: positive=up, negative=down, range ~0–100)
 - open_app: open a Mac application by name
   → {"type":"open_app", "app":"System Settings", "wait_ms":2000, "description":"Open System Settings"}
 - focus_app: bring an app to front
@@ -235,12 +295,15 @@ Available step types:
   → {"type":"failed", "message":"reason"}
 
 Strategy:
-1. For ANY System Settings / System Preferences panel → ALWAYS use open_settings_panel with the panel name. Never use click_at for System Settings navigation. This works without any permissions.
-2. For other apps: look at the screenshot. If you can see the target element → use click_at with exact coordinates.
-3. If the target app is not open yet → use open_app first, then wait, then click_at on the UI element.
-4. For typing: click_at on the input field first, then type_text.
-5. For email/compose: prefer open_url to Gmail compose page — it's simpler than Mail.app.
-6. Return ONE logical sequence of steps. Be precise with coordinates — look carefully at the screenshot.
+1. For ANY System Settings panel → use open_settings_panel. Never click_at for settings navigation.
+2. For VOLUME changes ("increase/decrease volume", "mute", "volume up/down") → ALWAYS use set_volume with delta (e.g. +10 or -10). Never use click_at for volume slider.
+3. For SCREEN BRIGHTNESS ("increase/decrease brightness", "brighter/dimmer screen") → use set_brightness with delta (e.g. +0.15 or -0.15).
+4. For KEYBOARD BACKLIGHT ("keyboard brightness", "keyboard backlight") → use set_keyboard_brightness with delta (e.g. +20 or -20).
+5. For other apps: look at the screenshot. If you can see the target element → use click_at with exact coordinates.
+6. If the target app is not open yet → use open_app first, then wait, then click_at.
+7. For typing: click_at on the input field first, then type_text.
+8. For email/compose: prefer open_url to Gmail compose page — it's simpler than Mail.app.
+9. Return ONE logical sequence of steps.
 
 Output ONLY valid JSON: {"steps": [...]}
 `.trim();
