@@ -21,6 +21,12 @@ const ALLOWED_ACTIONS = [
     destructive: false,
   },
   {
+    name: 'play_youtube_video',
+    description: 'Search YouTube for a video and play the first result. Use this when user says play, watch, or show a video.',
+    params: { query: 'string — search terms, e.g. "whatthelogic latest video" or "MrBeast chocolate" ' },
+    destructive: false,
+  },
+  {
     name: 'search_google',
     description: 'Search Google for a query.',
     params: { query: 'string — the search terms' },
