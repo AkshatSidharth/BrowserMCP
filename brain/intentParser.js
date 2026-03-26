@@ -39,17 +39,18 @@ ${actionList}
 
 Rules:
 1. Output ONLY a single valid JSON object — no markdown, no explanation.
-2. If the user says "open X app" or "launch X app" or "X app kholdo" (explicitly says "app") → use desktop_act.
-3. For SYSTEM SETTINGS navigation — any mention of a macOS settings panel: wifi, bluetooth, network, accessibility, appearance, displays, sound, battery, notifications, privacy, security, wallpaper, screensaver, focus, siri, keyboard, mouse, trackpad, users, storage, airdrop, general, login items, spotlight → use desktop_act. This includes "click on accessibility", "go to wifi", "look for bluetooth", "open display settings", "take me to notifications", "go to sound" etc.
-4. For CLOSE TAB ("close this tab", "close tab", "close it", "tab band karo") → use close_tab.
-5. For plain WEBSITE NAVIGATION with no content intent — just opening a site ("open Gmail", "open Instagram", "go to YouTube", "new tab", "open youtube.com") → use open_website or new_tab. BUT if the user wants specific content ("open lo-fi videos on YouTube", "open MrBeast videos", "search YouTube for X") → use smart_act.
-6. For NATIVE DESKTOP actions — ("open Notes", "open Calendar", "open Finder", "write a mail using Mail app", "press keyboard shortcut") → use desktop_act.
-7. For COMPOSE/EMAIL tasks ("write an email to X", "compose email to X", "send a mail") → use desktop_act.
-8. For SEARCH/FIND tasks on a website ("search for X on YouTube", "find a video of X", "search X on Amazon") → use smart_act.
-9. For EVERYTHING ELSE interacting with the current browser page → use smart_act.
-10. smart_act is ONLY for browser pages — entering text, clicking buttons in a website, logging in, filling forms, OTP.
-11. Extract values the user mentions — phone numbers, emails, names, passwords — and include in command param.
-12. Never return "unknown".
+2. "go back" / "previous page" / "wapas jao" with NO site name → use go_back. But "come back to X" / "go back to X" / "switch to X tab" with a SITE NAME → use open_website with site=X.
+3. If the user says "open X app" or "launch X app" or "X app kholdo" (explicitly says "app") → use desktop_act.
+4. For SYSTEM SETTINGS navigation — any mention of a macOS settings panel: wifi, bluetooth, network, accessibility, appearance, displays, sound, battery, notifications, privacy, security, wallpaper, screensaver, focus, siri, keyboard, mouse, trackpad, users, storage, airdrop, general, login items, spotlight → use desktop_act. This includes "click on accessibility", "go to wifi", "look for bluetooth", "open display settings", "take me to notifications", "go to sound" etc.
+5. For CLOSE TAB ("close this tab", "close tab", "close it", "tab band karo") → use close_tab.
+6. For plain WEBSITE NAVIGATION with no content intent — opening a site OR switching to an existing tab ("open Gmail", "open Instagram", "go to YouTube", "new tab", "go back to Flipkart", "come back to YouTube", "switch to Facebook tab", "Flipkart tab pe jao") → use open_website or new_tab. BUT if the user wants specific content ("open lo-fi videos on YouTube", "search YouTube for X") → use smart_act.
+7. For NATIVE DESKTOP actions — ("open Notes", "open Calendar", "open Finder", "write a mail using Mail app", "press keyboard shortcut") → use desktop_act.
+8. For COMPOSE/EMAIL tasks ("write an email to X", "compose email to X", "send a mail") → use desktop_act.
+9. For SEARCH/FIND tasks on a website ("search for X on YouTube", "find a video of X", "search X on Amazon") → use smart_act.
+10. For EVERYTHING ELSE interacting with the current browser page → use smart_act.
+11. smart_act is ONLY for browser pages — entering text, clicking buttons in a website, logging in, filling forms, OTP.
+12. Extract values the user mentions — phone numbers, emails, names, passwords — and include in command param.
+13. Never return "unknown".
 
 Output schema:
 { "action": "<action_name>", "params": { ... } }
