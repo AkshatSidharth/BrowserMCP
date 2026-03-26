@@ -1,0 +1,351 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Browser MCP — Voice CRM Agent</title>
+  <style>
+    :root {
+      --bg: #0f1117;
+      --card: #1a1d27;
+      --border: #2a2d3e;
+      --accent: #6c63ff;
+      --accent-glow: rgba(108,99,255,.35);
+      --green: #22c55e;
+      --red: #ef4444;
+      --yellow: #f59e0b;
+      --text: #e2e8f0;
+      --muted: #64748b;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      background: var(--bg);
+      color: var(--text);
+      font-family: 'Segoe UI', system-ui, sans-serif;
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      padding: 2rem 1rem;
+    }
+    h1 { font-size: 1.6rem; font-weight: 700; letter-spacing: -.02em; }
+    h1 span { color: var(--accent); }
+    .subtitle { color: var(--muted); font-size: .9rem; margin-top: .3rem; }
+
+    .card {
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 16px;
+      padding: 1.5rem;
+      width: 100%;
+      max-width: 560px;
+    }
+
+    /* ── Mic button ── */
+    #mic-btn {
+      width: 90px; height: 90px;
+      border-radius: 50%;
+      border: none;
+      background: var(--accent);
+      color: #fff;
+      font-size: 2.2rem;
+      cursor: pointer;
+      display: flex; align-items: center; justify-content: center;
+      margin: 1.5rem auto;
+      transition: transform .15s, box-shadow .15s;
+      box-shadow: 0 0 0 0 var(--accent-glow);
+    }
+    #mic-btn:hover { transform: scale(1.06); }
+    #mic-btn.recording {
+      background: var(--red);
+      animation: pulse 1.2s infinite;
+    }
+    @keyframes pulse {
+      0%,100% { box-shadow: 0 0 0 0 rgba(239,68,68,.5); }
+      50%      { box-shadow: 0 0 0 14px rgba(239,68,68,0); }
+    }
+
+    /* ── Text input ── */
+    .input-row { display: flex; gap: .6rem; margin-top: .5rem; }
+    #text-input {
+      flex: 1;
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: .65rem 1rem;
+      color: var(--text);
+      font-size: .95rem;
+      outline: none;
+    }
+    #text-input:focus { border-color: var(--accent); }
+    #send-btn {
+      padding: .65rem 1.2rem;
+      background: var(--accent);
+      color: #fff;
+      border: none;
+      border-radius: 8px;
+      cursor: pointer;
+      font-size: .95rem;
+      font-weight: 600;
+    }
+    #send-btn:hover { opacity: .88; }
+
+    /* ── Status pill ── */
+    #status {
+      text-align: center;
+      font-size: .82rem;
+      color: var(--muted);
+      min-height: 1.4em;
+      margin: .6rem 0;
+    }
+
+    /* ── Log ── */
+    .log-label {
+      font-size: .75rem;
+      color: var(--muted);
+      text-transform: uppercase;
+      letter-spacing: .06em;
+      margin-bottom: .4rem;
+    }
+    #log {
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: .8rem;
+      font-family: monospace;
+      font-size: .82rem;
+      max-height: 260px;
+      overflow-y: auto;
+      display: flex;
+      flex-direction: column;
+      gap: .35rem;
+    }
+    .log-entry { display: flex; gap: .5rem; align-items: flex-start; }
+    .log-entry .time { color: var(--muted); flex-shrink: 0; }
+    .log-entry.ok   .msg { color: var(--green); }
+    .log-entry.warn .msg { color: var(--yellow); }
+    .log-entry.err  .msg { color: var(--red); }
+    .log-entry.info .msg { color: var(--text); }
+
+    /* ── Screenshot ── */
+    #screenshot-wrap { margin-top: 1rem; display: none; }
+    #screenshot-wrap img { width: 100%; border-radius: 8px; border: 1px solid var(--border); }
+    #refresh-btn {
+      width: 100%;
+      margin-top: .6rem;
+      padding: .5rem;
+      background: transparent;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      color: var(--muted);
+      cursor: pointer;
+      font-size: .82rem;
+    }
+    #refresh-btn:hover { border-color: var(--accent); color: var(--accent); }
+
+    /* ── Examples ── */
+    .examples { display: flex; flex-wrap: wrap; gap: .4rem; margin-top: .8rem; }
+    .ex-chip {
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: 20px;
+      padding: .3rem .8rem;
+      font-size: .8rem;
+      cursor: pointer;
+      color: var(--muted);
+      transition: border-color .15s, color .15s;
+    }
+    .ex-chip:hover { border-color: var(--accent); color: var(--accent); }
+
+    .divider { border: none; border-top: 1px solid var(--border); margin: 1.2rem 0; }
+  </style>
+</head>
+<body>
+
+<h1>Browser <span>MCP</span></h1>
+<p class="subtitle">Voice-controlled browser agent · Headless Chromium on server</p>
+
+<br>
+
+<div class="card">
+
+  <!-- Mic -->
+  <button id="mic-btn" title="Hold to record voice command">🎤</button>
+  <div id="status">Click the mic and speak, or type below</div>
+
+  <!-- Text input -->
+  <div class="input-row">
+    <input id="text-input" type="text" placeholder='e.g. "Search Google for Playwright"' />
+    <button id="send-btn">Send</button>
+  </div>
+
+  <!-- Example chips -->
+  <div class="examples">
+    <span class="ex-chip">Open YouTube</span>
+    <span class="ex-chip">Search Google for playwright docs</span>
+    <span class="ex-chip">Open CRM</span>
+    <span class="ex-chip">Create lead Rahul 9876543210</span>
+    <span class="ex-chip">Get tickets</span>
+    <span class="ex-chip">Take screenshot</span>
+    <span class="ex-chip">Go back</span>
+  </div>
+
+  <hr class="divider">
+
+  <!-- Log -->
+  <div class="log-label">Activity log</div>
+  <div id="log"><div class="log-entry info"><span class="time">--:--</span><span class="msg">Ready. Waiting for commands ...</span></div></div>
+
+  <!-- Screenshot -->
+  <div id="screenshot-wrap">
+    <div class="log-label" style="margin-top:1rem">Current browser view</div>
+    <img id="screenshot" src="" alt="browser screenshot" />
+    <button id="refresh-btn">↻ Refresh screenshot</button>
+  </div>
+
+</div>
+
+<script>
+// ─── Utilities ────────────────────────────────────────────────────────────────
+function now() {
+  return new Date().toLocaleTimeString('en-US', { hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit' });
+}
+
+function log(msg, type = 'info') {
+  const el = document.getElementById('log');
+  const entry = document.createElement('div');
+  entry.className = `log-entry ${type}`;
+  entry.innerHTML = `<span class="time">${now()}</span><span class="msg">${msg}</span>`;
+  el.appendChild(entry);
+  el.scrollTop = el.scrollHeight;
+}
+
+function setStatus(msg) {
+  document.getElementById('status').textContent = msg;
+}
+
+// ─── Send text command ────────────────────────────────────────────────────────
+async function sendCommand(text) {
+  if (!text.trim()) return;
+  log(`▶ ${text}`, 'info');
+  setStatus('Processing ...');
+  try {
+    const res = await fetch('/command', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ text }),
+    });
+    const data = await res.json();
+    if (data.ok) {
+      log(`✓ ${data.message}`, 'ok');
+    } else {
+      log(`⚠ ${data.message}`, 'warn');
+    }
+    if (data.intent) log(`  intent: ${JSON.stringify(data.intent)}`, 'info');
+    setStatus('Done. Ready for next command.');
+    refreshScreenshot();
+  } catch (err) {
+    log(`✗ ${err.message}`, 'err');
+    setStatus('Error. Check console.');
+  }
+}
+
+// ─── Screenshot ───────────────────────────────────────────────────────────────
+function refreshScreenshot() {
+  const wrap = document.getElementById('screenshot-wrap');
+  const img  = document.getElementById('screenshot');
+  wrap.style.display = 'block';
+  img.src = `/screenshot?t=${Date.now()}`;
+}
+
+document.getElementById('refresh-btn').addEventListener('click', refreshScreenshot);
+
+// ─── Text input ───────────────────────────────────────────────────────────────
+const textInput = document.getElementById('text-input');
+document.getElementById('send-btn').addEventListener('click', () => {
+  sendCommand(textInput.value);
+  textInput.value = '';
+});
+textInput.addEventListener('keydown', (e) => {
+  if (e.key === 'Enter') {
+    sendCommand(textInput.value);
+    textInput.value = '';
+  }
+});
+
+// ─── Example chips ────────────────────────────────────────────────────────────
+document.querySelectorAll('.ex-chip').forEach(chip => {
+  chip.addEventListener('click', () => sendCommand(chip.textContent));
+});
+
+// ─── Mic / Voice recording ────────────────────────────────────────────────────
+const micBtn = document.getElementById('mic-btn');
+let mediaRecorder = null;
+let audioChunks   = [];
+
+micBtn.addEventListener('click', async () => {
+  if (mediaRecorder && mediaRecorder.state === 'recording') {
+    // Stop recording
+    mediaRecorder.stop();
+    return;
+  }
+
+  // Start recording
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    audioChunks = [];
+    mediaRecorder = new MediaRecorder(stream, { mimeType: 'audio/webm' });
+
+    mediaRecorder.ondataavailable = (e) => {
+      if (e.data.size > 0) audioChunks.push(e.data);
+    };
+
+    mediaRecorder.onstop = async () => {
+      micBtn.classList.remove('recording');
+      micBtn.textContent = '🎤';
+      setStatus('Transcribing ...');
+      stream.getTracks().forEach(t => t.stop());
+
+      const blob = new Blob(audioChunks, { type: 'audio/webm' });
+      const form = new FormData();
+      form.append('audio', blob, 'voice.webm');
+
+      try {
+        log('🎙 Sending voice to Whisper ...', 'info');
+        const res  = await fetch('/voice', { method: 'POST', body: form });
+        const data = await res.json();
+
+        if (data.transcript) log(`🗣 "${data.transcript}"`, 'info');
+
+        if (data.ok) {
+          log(`✓ ${data.message}`, 'ok');
+        } else {
+          log(`⚠ ${data.message}`, 'warn');
+        }
+        setStatus('Done. Ready for next command.');
+        refreshScreenshot();
+      } catch (err) {
+        log(`✗ ${err.message}`, 'err');
+        setStatus('Error sending audio.');
+      }
+    };
+
+    mediaRecorder.start();
+    micBtn.classList.add('recording');
+    micBtn.textContent = '⏹';
+    setStatus('Recording ... click ⏹ to stop');
+    log('🎙 Recording started (click ⏹ to stop)', 'info');
+
+  } catch (err) {
+    log(`✗ Mic access denied: ${err.message}`, 'err');
+    setStatus('Microphone access denied. Use text input instead.');
+  }
+});
+
+// ─── Initial screenshot ───────────────────────────────────────────────────────
+window.addEventListener('load', () => {
+  setTimeout(refreshScreenshot, 1500);
+});
+</script>
+</body>
+</html>

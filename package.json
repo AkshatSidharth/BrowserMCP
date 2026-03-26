@@ -5,13 +5,16 @@
   "main": "index.js",
   "scripts": {
     "start": "node index.js",
-    "demo": "node index.js --demo",
-    "debug": "node index.js --demo --debug",
+    "demo": "node index.js --demo --launch",
+    "debug": "node index.js --demo --launch --debug",
+    "server": "node server/index.js",
     "install:browsers": "npx playwright install chromium"
   },
   "dependencies": {
     "chalk": "^4.1.2",
     "dotenv": "^16.4.5",
+    "express": "^5.2.1",
+    "multer": "^2.1.1",
     "node-record-lpcm16": "^1.0.1",
     "openai": "^4.52.7",
     "playwright": "^1.45.3",

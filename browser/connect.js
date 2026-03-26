@@ -1,76 +1,109 @@
 'use strict';
 
 require('dotenv').config();
+const path = require('path');
 const { chromium } = require('playwright');
 const logger = require('../logger');
 
 const CDP_URL = `http://localhost:${process.env.CHROME_DEBUG_PORT || 9222}`;
 
-let _browser = null;
-let _page = null;
+// ─── Launch mode ──────────────────────────────────────────────────────────────
+// On servers with no GUI Chrome, we launch Playwright's bundled Chromium
+// directly (headless). Pass --launch flag or set BROWSER_LAUNCH=true in .env.
+// On a local desktop, leave this false and start Chrome manually with
+//   chrome --remote-debugging-port=9222 --user-data-dir="./chrome-profile"
 
-/**
- * Connect to an already-running Chrome session via Chrome DevTools Protocol.
- *
- * BEFORE running this app, launch Chrome with:
- *   chrome --remote-debugging-port=9222 --user-data-dir="./chrome-profile"
- *
- * This reuses your existing login sessions (CRM, Gmail, etc.) without any
- * credential handling inside the agent.
- */
+const LAUNCH_MODE =
+  process.argv.includes('--launch') ||
+  process.env.BROWSER_LAUNCH === 'true';
+
+// Path to the pre-installed Playwright Chromium on this machine.
+// Playwright looks here when PLAYWRIGHT_BROWSERS_PATH is set, or falls back
+// to the default cache location.
+const CHROMIUM_EXEC =
+  process.env.CHROMIUM_EXEC ||
+  '/root/.cache/ms-playwright/chromium-1194/chrome-linux/chrome';
+
+let _browser = null;
+let _context = null;
+let _page    = null;
+
+// ─── Connect or launch ────────────────────────────────────────────────────────
+
 async function connectBrowser() {
   if (_browser) return _browser;
 
-  logger.info(`Connecting to Chrome at ${CDP_URL} ...`);
-  try {
-    _browser = await chromium.connectOverCDP(CDP_URL);
-    logger.info('Connected to Chrome successfully.');
-  } catch (err) {
-    logger.error(
-      `Could not connect to Chrome. Make sure Chrome is running with:\n` +
-      `  chrome --remote-debugging-port=${process.env.CHROME_DEBUG_PORT || 9222} --user-data-dir="./chrome-profile"`,
-    );
-    throw err;
+  if (LAUNCH_MODE) {
+    logger.info(`Launching headless Chromium (${CHROMIUM_EXEC}) ...`);
+    _browser = await chromium.launch({
+      executablePath: CHROMIUM_EXEC,
+      headless: true,
+      args: [
+        '--no-sandbox',
+        '--disable-setuid-sandbox',
+        '--disable-dev-shm-usage',  // important in Docker / low-memory envs
+        '--disable-gpu',
+      ],
+    });
+    _context = await _browser.newContext();
+    _page    = await _context.newPage();
+    logger.info('Headless Chromium launched.');
+  } else {
+    logger.info(`Connecting to Chrome at ${CDP_URL} ...`);
+    try {
+      _browser = await chromium.connectOverCDP(CDP_URL);
+      logger.info('Connected to Chrome successfully.');
+    } catch (err) {
+      logger.error(
+        `Could not connect to Chrome. Either:\n` +
+        `  A) Start Chrome with:\n` +
+        `       chrome --remote-debugging-port=${process.env.CHROME_DEBUG_PORT || 9222} --user-data-dir="./chrome-profile"\n` +
+        `  B) Use launch mode for headless servers:\n` +
+        `       node index.js --demo --launch`,
+      );
+      throw err;
+    }
   }
 
-  // Reconnect automatically if the browser disconnects
   _browser.on('disconnected', () => {
-    logger.warn('Chrome disconnected. Will reconnect on next command.');
+    logger.warn('Browser disconnected. Will reconnect on next command.');
     _browser = null;
-    _page = null;
+    _context = null;
+    _page    = null;
   });
 
   return _browser;
 }
 
 /**
- * Return the active (foreground) page from the connected browser.
- * If multiple tabs are open, returns the last one — usually the visible tab.
+ * Return the active page.
+ * - Launch mode: returns the single managed page.
+ * - CDP mode: returns the last open tab.
  */
 async function getActivePage() {
-  const browser = await connectBrowser();
-  const contexts = browser.contexts();
+  await connectBrowser();
 
-  if (!contexts.length) {
-    throw new Error('No browser contexts found. Open a tab in Chrome first.');
+  // Launch mode: reuse the managed page
+  if (LAUNCH_MODE) {
+    if (_page && !_page.isClosed()) return _page;
+    _page = await _context.newPage();
+    return _page;
   }
 
+  // CDP mode: find a page from the remote contexts
+  const contexts = _browser.contexts();
+  if (!contexts.length) throw new Error('No browser contexts found.');
   const pages = contexts[0].pages();
-  if (!pages.length) {
-    throw new Error('No open tabs found. Open a tab in Chrome first.');
-  }
+  if (!pages.length)    throw new Error('No open tabs found. Open a tab in Chrome first.');
 
-  // Prefer a cached page unless it's been closed
   if (_page && !_page.isClosed()) return _page;
-
-  // Use the last tab as the "active" one
   _page = pages[pages.length - 1];
   logger.debug(`Active page: ${_page.url()}`);
   return _page;
 }
 
 /**
- * Navigate the active page to a URL and wait until the network is idle.
+ * Navigate the active page to a URL.
  */
 async function navigateTo(url) {
   const page = await getActivePage();
@@ -80,14 +113,15 @@ async function navigateTo(url) {
 }
 
 /**
- * Disconnect cleanly (called on shutdown).
+ * Disconnect / close cleanly.
  */
 async function disconnect() {
   if (_browser) {
     await _browser.close();
     _browser = null;
-    _page = null;
+    _context = null;
+    _page    = null;
   }
 }
 
-module.exports = { connectBrowser, getActivePage, navigateTo, disconnect };
+module.exports = { connectBrowser, getActivePage, navigateTo, disconnect, LAUNCH_MODE };
