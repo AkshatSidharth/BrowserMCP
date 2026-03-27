@@ -30,28 +30,62 @@ const getClient = () => {
 const MAX_STEPS = 30;
 
 // ─── 1. waitForEventsAfterAction  (Chrome DevTools MCP: WaitForHelper.ts) ────
-// Runs action → detects navigation → waits for nav + DOM stable.
-// Replaces all fixed waitForTimeout calls.
+// Exact technique from WaitForHelper.ts:
+//   1. Start CDP Page.frameStartedNavigating listener BEFORE action
+//   2. Race it against 100ms timeout (expectNavigationIn)
+//   3. Run the action
+//   4. If real navigation detected → waitForNavigation + networkidle
+//   5. Always wait for DOM stable afterwards
+//
+// Critical: same-document navigations (SPA hash changes, history.pushState)
+// resolve(false) — they don't need a full waitForNavigation round-trip.
 async function waitForEventsAfterAction(page, actionFn) {
-  let navigationStarted = false;
+  let cdpClient;
+  let realNav = false;
 
-  // Listen for navigation before running the action
-  const navListener = () => { navigationStarted = true; };
-  page.once('framenavigated', navListener);
+  // Promise that resolves true=real-nav | false=same-doc/timeout
+  const navDetected = new Promise((resolve) => {
+    // SAME_DOC types that don't require a full page-load wait
+    const SAME_DOC = new Set(['historySameDocument', 'historyDifferentDocument', 'sameDocument']);
+
+    page.context().newCDPSession(page)
+      .then((client) => {
+        cdpClient = client;
+        const handler = (evt) => {
+          const isReal = !SAME_DOC.has(evt.navigationType);
+          realNav = isReal;
+          resolve(isReal);
+          client.off('Page.frameStartedNavigating', handler);
+        };
+        client.on('Page.frameStartedNavigating', handler);
+      })
+      .catch(() => resolve(false));
+
+    // Hard cap: 100ms (WaitForHelper: expectNavigationIn)
+    setTimeout(() => resolve(false), 100);
+  });
+
+  // Chain: if real nav → wait for it to complete
+  const navigationFinished = navDetected.then(async (didNavigate) => {
+    if (didNavigate) {
+      await page.waitForLoadState('domcontentloaded', { timeout: 15000 }).catch(() => {});
+      await page.waitForLoadState('networkidle', { timeout: 8000 }).catch(() => {});
+    }
+  }).catch(() => {});
 
   try {
     await actionFn();
-  } finally {
-    page.off('framenavigated', navListener);
+  } catch (err) {
+    if (cdpClient) await cdpClient.detach().catch(() => {});
+    throw err;
   }
 
-  if (navigationStarted) {
-    // Wait for full page load after navigation
-    await page.waitForLoadState('domcontentloaded', { timeout: 15000 }).catch(() => {});
-    await page.waitForLoadState('networkidle', { timeout: 8000 }).catch(() => {});
-  } else {
-    // No navigation — wait for DOM to stop mutating (React re-renders, filter updates)
-    await waitForDomStable(page, { timeout: 3000, quietMs: 250 });
+  try {
+    await navigationFinished;
+    // Always wait for DOM stable (React re-renders, filter sidebar updates)
+    await waitForDomStable(page, { timeout: 3000, quietMs: 100 });
+  } catch { /* ignore */ } finally {
+    if (cdpClient) await cdpClient.detach().catch(() => {});
   }
 }
 
@@ -182,6 +216,8 @@ Actions:
 - type       → {"action":"type",      "text":"...",                      "description":"..."}  type at current focus
 - scroll     → {"action":"scroll",    "direction":"down","amount":400,   "description":"..."}
 - scroll_xy  → {"action":"scroll_xy", "x":100,"y":400,"direction":"down","amount":300,"description":"..."}
+- double_click → {"action":"double_click","index":N,                      "description":"..."}  open files/folders
+- wait_for   → {"action":"wait_for",  "text":"Add to cart",              "description":"..."}  wait until text/element visible
 - evaluate   → {"action":"evaluate",  "script":"document.title",         "description":"..."}
 - wait       → {"action":"wait",      "ms":1500,                         "description":"..."}
 - navigate   → {"action":"navigate",  "url":"https://...",               "description":"..."}
@@ -266,6 +302,19 @@ async function executeStep(page, elements, step) {
     case 'click_xy': {
       // Chrome DevTools MCP: pptrPage.mouse.click(x, y)
       await page.mouse.click(step.x, step.y);
+      break;
+    }
+
+    case 'double_click': {
+      if (!el) throw new Error(`No element at index ${step.index}`);
+      try {
+        const loc = page.getByRole(el.locator.pwRole, { name: el.locator.name, exact: false }).first();
+        await loc.scrollIntoViewIfNeeded({ timeout: 2000 });
+        await loc.dblclick({ timeout: 3000 });
+      } catch {
+        if (el.cx != null) await page.mouse.dblclick(el.cx, el.cy);
+        else throw new Error(`Cannot double-click "${el.name}"`);
+      }
       break;
     }
 
@@ -359,6 +408,19 @@ async function executeStep(page, elements, step) {
         }
         window.scrollBy(0, dir * amt);
       }, { x: step.x, y: step.y, dir, amt });
+      break;
+    }
+
+    case 'wait_for': {
+      // Chrome DevTools MCP: context.waitForTextOnPage — Locator.race()
+      // Waits until the given text appears anywhere on the page (useful for SPAs)
+      const text = step.text || '';
+      try {
+        await page.waitForSelector(`text=${text}`, { timeout: step.timeout || 8000 });
+      } catch {
+        // Try aria-based locator as fallback
+        await page.getByText(text, { exact: false }).waitFor({ timeout: 3000 }).catch(() => {});
+      }
       break;
     }
 
