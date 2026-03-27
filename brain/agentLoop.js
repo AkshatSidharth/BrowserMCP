@@ -205,24 +205,25 @@ Each element: [index] state role "name" val @(cx,cy)
 You return ONE JSON action per turn.
 
 Actions:
-- click      → {"action":"click",     "index":N,                         "description":"..."}
-- fill       → {"action":"fill",      "index":N,      "value":"...",     "description":"..."}
-- click_xy   → {"action":"click_xy",  "x":300,"y":400,                   "description":"..."}  use for unlisted elements
-- hover      → {"action":"hover",     "index":N,                         "description":"..."}
-- hover_xy   → {"action":"hover_xy",  "x":300,"y":400,                   "description":"..."}
-- drag_xy    → {"action":"drag_xy",   "x1":100,"y1":300,"x2":400,"y2":300,"description":"..."}  for sliders
-- select     → {"action":"select",    "index":N,      "value":"opt text","description":"..."}
-- press      → {"action":"press",     "key":"Enter",                     "description":"..."}
-- type       → {"action":"type",      "text":"...",                      "description":"..."}  type at current focus
-- scroll     → {"action":"scroll",    "direction":"down","amount":400,   "description":"..."}
-- scroll_xy  → {"action":"scroll_xy", "x":100,"y":400,"direction":"down","amount":300,"description":"..."}
-- double_click → {"action":"double_click","index":N,                      "description":"..."}  open files/folders
-- wait_for   → {"action":"wait_for",  "text":"Add to cart",              "description":"..."}  wait until text/element visible
-- evaluate   → {"action":"evaluate",  "script":"document.title",         "description":"..."}
-- wait       → {"action":"wait",      "ms":1500,                         "description":"..."}
-- navigate   → {"action":"navigate",  "url":"https://...",               "description":"..."}
-- done       → {"action":"done",      "message":"..."}
-- failed     → {"action":"failed",    "message":"..."}
+- click        → {"action":"click",      "index":N,                          "description":"..."}
+- fill         → {"action":"fill",       "index":N,      "value":"...",      "description":"..."}
+- press_on     → {"action":"press_on",   "index":N,      "key":"Enter",      "description":"..."}  press key ON a specific element (use after fill on search/form fields)
+- click_xy     → {"action":"click_xy",   "x":300,"y":400,                    "description":"..."}  use for unlisted elements
+- hover        → {"action":"hover",      "index":N,                          "description":"..."}
+- hover_xy     → {"action":"hover_xy",   "x":300,"y":400,                    "description":"..."}
+- drag_xy      → {"action":"drag_xy",    "x1":100,"y1":300,"x2":400,"y2":300,"description":"..."}  for sliders
+- select       → {"action":"select",     "index":N,      "value":"opt text", "description":"..."}
+- press        → {"action":"press",      "key":"Enter",                      "description":"..."}  press key at current focus (only if you know focus is on the right element)
+- type         → {"action":"type",       "text":"...",                       "description":"..."}  type at current focus
+- scroll       → {"action":"scroll",     "direction":"down","amount":400,    "description":"..."}
+- scroll_xy    → {"action":"scroll_xy",  "x":100,"y":400,"direction":"down","amount":300,"description":"..."}
+- double_click → {"action":"double_click","index":N,                         "description":"..."}  open files/folders
+- wait_for     → {"action":"wait_for",   "text":"Add to cart",               "description":"..."}  wait until text/element visible
+- evaluate     → {"action":"evaluate",   "script":"document.title",          "description":"..."}
+- wait         → {"action":"wait",       "ms":1500,                          "description":"..."}
+- navigate     → {"action":"navigate",   "url":"https://...",                "description":"..."}
+- done         → {"action":"done",       "message":"..."}
+- failed       → {"action":"failed",     "message":"..."}
 
 Rules:
 1. Return ONLY valid JSON. No markdown.
@@ -236,15 +237,20 @@ Rules:
    - Checkboxes show ✓ or ○ in the list. Click by index to toggle.
    - If not in list → scroll_xy near the sidebar, then click_xy at the exact checkbox position.
    - Price slider → drag_xy from current thumb position to target.
-9. After fill, check if you need to press Enter or click a submit/Next button.
+9. SEARCH BARS — CRITICAL rule (Flipkart, Amazon, YouTube, any site):
+   - Step 1: fill the search bar with the query (index N).
+   - Step 2: press_on the SAME index N with key "Enter" — this fires Enter directly on the input, bypassing any dropdown that may have stolen focus.
+   - NEVER use plain press{key:Enter} after fill — focus may have shifted to a suggestion dropdown.
+   - If press_on also fails, use click_xy on the search submit button coordinates.
 10. On e-commerce (Flipkart/Amazon):
-    - Search results: click the product title to open it.
+    - Search results: click the product title to open it. If click does nothing, try click_xy at the product's @(cx,cy) coordinates.
     - Product page: click "Add to Cart" or "Buy Now".
     - Cart: click "Place Order" or "Checkout".
 11. Done when: goal fully achieved (item in cart, order placed, video playing, logged in, filter applied).
 12. If an action fails → try click_xy using the @(cx,cy) coordinates shown for that element.
-13. For YouTube: fill search bar → Enter → click best matching video title.
+13. For YouTube: fill search bar → press_on same index with Enter → wait for results → click best matching video title.
 14. scroll_xy to scroll inside a sidebar/panel at specific coordinates.
+15. WRONG PAGE: If the goal requires a specific site (YouTube, Flipkart, Gmail, etc.) but you are on a different page, use navigate to go there FIRST before attempting any actions. Example: goal="play the song again" but page=Google → navigate to https://www.youtube.com first.
 `.trim();
 
 // ─── 6. GPT-4o call ───────────────────────────────────────────────────────────
@@ -364,6 +370,36 @@ async function executeStep(page, elements, step) {
           await page.mouse.click(el.cx, el.cy);
           await page.waitForTimeout(300);
         }
+      }
+      break;
+    }
+
+    case 'press_on': {
+      // Press a key directly on a specific element — bypasses focus/dropdown issues
+      if (!el) throw new Error(`No element at index ${step.index}`);
+      const k = step.key || 'Enter';
+      let pressed = false;
+      // Try Playwright locator first (most reliable — keeps focus on element)
+      for (const strategy of [
+        () => page.getByRole(el.locator.pwRole, { name: el.locator.name, exact: true }).first(),
+        () => page.getByRole(el.locator.pwRole, { name: el.locator.name, exact: false }).first(),
+        () => page.getByText(el.locator.name, { exact: false }).first(),
+      ]) {
+        try {
+          const loc = strategy();
+          await loc.focus({ timeout: 2000 });
+          await loc.press(k);
+          pressed = true;
+          break;
+        } catch { /* try next */ }
+      }
+      // Coordinate fallback: click to focus then press
+      if (!pressed && el.cx != null) {
+        await page.mouse.click(el.cx, el.cy);
+        await page.waitForTimeout(100);
+        await page.keyboard.press(k);
+      } else if (!pressed) {
+        throw new Error(`press_on: could not focus element "${el.name}"`);
       }
       break;
     }

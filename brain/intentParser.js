@@ -46,7 +46,7 @@ Rules:
 6. For plain WEBSITE NAVIGATION with no content intent — opening a site OR switching to an existing tab ("open Gmail", "open Instagram", "go to YouTube", "new tab", "go back to Flipkart", "come back to YouTube", "switch to Facebook tab", "Flipkart tab pe jao") → use open_website or new_tab. BUT if the user wants specific content ("open lo-fi videos on YouTube", "search YouTube for X") → use smart_act.
 7. For NATIVE DESKTOP actions — ("open Notes", "open Calendar", "open Finder", "write a mail using Mail app", "press keyboard shortcut") → use desktop_act.
 8. For COMPOSE/EMAIL tasks ("write an email to X", "compose email to X", "send a mail") → use desktop_act.
-9. For SEARCH/FIND tasks on a website ("search for X on YouTube", "find a video of X", "search X on Amazon") → use smart_act.
+9. For PLAYING/WATCHING videos or music ("play X", "watch X", "play the song again", "replay", "play it again", "phir se chalao", "dobara bajao") → use play_youtube_video with the song/video name as query. If the user says "play again" or "replay" without naming a specific song, still use play_youtube_video and put the last-mentioned song name or a generic query "last played song". NEVER route play/replay commands to smart_act.
 10. For KAPTURE CRM operations — use kapture_act (NOT smart_act, NOT open_website). This includes:
     - Listing tickets: "show tickets", "pending tickets", "open tickets", "how many tickets", "kitne tickets hain"
     - Ticket details: "get ticket 123", "show ticket details", "ticket 456 ka status"
