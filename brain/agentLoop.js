@@ -49,14 +49,15 @@ Each turn you receive:
 You return ONE next action as JSON, or signal completion/failure.
 
 Available actions:
-- fill:     type text into an input field        → {"action":"fill",     "element_index":N, "value":"...",  "description":"..."}
-- click:    click a button, link, or element      → {"action":"click",    "element_index":N,                "description":"..."}
-- press:    press a keyboard key                  → {"action":"press",    "key":"Enter",                    "description":"..."}
-- scroll:   scroll the page                       → {"action":"scroll",   "direction":"down", "amount":400, "description":"..."}
-- wait:     wait for page/content to load         → {"action":"wait",     "ms":2000,                        "description":"..."}
-- navigate: go to a URL directly                  → {"action":"navigate", "url":"https://...",              "description":"..."}
-- done:     goal is fully achieved                → {"action":"done",     "message":"what was accomplished"}
-- failed:   cannot proceed, explain why           → {"action":"failed",   "message":"reason"}
+- fill:      type text into an input field        → {"action":"fill",      "element_index":N, "value":"...",  "description":"..."}
+- click:     click a button/link by element index → {"action":"click",     "element_index":N,                "description":"..."}
+- click_xy:  click at screen coordinates (CDP)   → {"action":"click_xy",  "x":350, "y":240,                 "description":"..."}  ← use when element_index is unreliable
+- press:     press a keyboard key                 → {"action":"press",     "key":"Enter",                    "description":"..."}
+- scroll:    scroll the page                      → {"action":"scroll",    "direction":"down", "amount":400, "description":"..."}
+- wait:      wait for page/content to load        → {"action":"wait",      "ms":2000,                        "description":"..."}
+- navigate:  go to a URL directly                 → {"action":"navigate",  "url":"https://...",              "description":"..."}
+- done:      goal is fully achieved               → {"action":"done",      "message":"what was accomplished"}
+- failed:    cannot proceed, explain why          → {"action":"failed",    "message":"reason"}
 
 Critical rules:
 1. Return ONLY valid JSON — no markdown, no explanation outside the JSON.
@@ -70,11 +71,12 @@ Critical rules:
 6. NEVER type placeholder values like <yourphonenumberhere>, [phone], [email], YOUR_NUMBER etc. If the actual value is not in the GOAL, return {"action":"failed","message":"Please say your phone number / email / password to enter it"}.
 7. For YouTube search: fill the search bar with the query, press Enter. After results load, scroll and click the best matching video title.
 8. For Flipkart/Amazon add-to-cart: look for "Add to Cart" or "Buy Now" buttons.
-9. Use element_index from the numbered list — do NOT guess CSS selectors.
+9. Each element in the list has screen-coords @(x,y). Prefer click by element_index; use click_xy if the element_index click fails or the element is a canvas/overlay/slider that lacks an index.
 10. After each fill, check if a "Next" or submit button needs to be clicked.
 11. If the goal is clearly complete (cart updated, order placed, product found, video playing, logged in), return done.
 12. Never repeat the same action more than once — if something failed, try a completely different approach or return failed.
 13. scroll direction: "down" to scroll down, "up" to scroll up. amount is pixels (default 400).
+14. For price/range sliders or canvas elements not in the list → use click_xy with the coordinates you see in the screenshot.
 `.trim();
 
 // ─── Get next step from GPT-4o ─────────────────────────────────────────────────
@@ -146,6 +148,20 @@ async function executeStep(page, handles, step) {
       if (!el) throw new Error(`No element at index ${element_index}`);
       await el.scrollIntoViewIfNeeded().catch(() => {});
       await el.click();
+      break;
+    }
+    case 'click_xy': {
+      // Chrome DevTools MCP technique: CDP coordinate-based click
+      // More reliable than element handles on SPAs where DOM updates make handles stale.
+      const { x, y } = step;
+      let cdpClient;
+      try {
+        cdpClient = await page.context().newCDPSession(page);
+        await cdpClient.send('Input.dispatchMouseEvent', { type: 'mousePressed', x, y, button: 'left', clickCount: 1 });
+        await cdpClient.send('Input.dispatchMouseEvent', { type: 'mouseReleased', x, y, button: 'left', clickCount: 1 });
+      } finally {
+        if (cdpClient) await cdpClient.detach().catch(() => {});
+      }
       break;
     }
     case 'press': {

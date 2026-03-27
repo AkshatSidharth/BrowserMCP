@@ -40,6 +40,9 @@ async function extractPageContext(page) {
             name:        el.getAttribute('name') || '',
             id:          el.id || '',
             placeholder: el.getAttribute('placeholder') || '',
+            // Centre of bounding box — used for CDP coordinate clicking
+            cx: Math.round(rect.left + rect.width  / 2),
+            cy: Math.round(rect.top  + rect.height / 2),
           };
         })
         .filter(Boolean);
@@ -55,10 +58,10 @@ async function extractPageContext(page) {
 function formatContext(ctx) {
   const elLines = ctx.elements.map(e => {
     const attrs = [e.tag, e.type, e.name, e.id, e.placeholder].filter(Boolean).join('|');
-    return `  [${e.index}] "${e.label}"  (${attrs})`;
+    return `  [${e.index}] "${e.label}"  (${attrs})  @(${e.cx},${e.cy})`;
   }).join('\n');
 
-  return `Page: ${ctx.title}\nURL: ${ctx.url}\n\nInteractive elements:\n${elLines || '  (none found)'}`;
+  return `Page: ${ctx.title}\nURL: ${ctx.url}\n\nInteractive elements (index, label, attrs, screen-coords):\n${elLines || '  (none found)'}`;
 }
 
 module.exports = { extractPageContext, formatContext };
