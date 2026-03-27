@@ -459,7 +459,7 @@ function installDialogHandler(page) {
 async function runAgentLoop(page, goal, onStep) {
   const history     = [];
   let   stepCount   = 0;
-  let   lastDesc    = '';
+  let   lastActionKey = '';
   let   repeatCount = 0;
   let   activePage  = page;
 
@@ -475,6 +475,7 @@ async function runAgentLoop(page, goal, onStep) {
     await activePage.waitForLoadState('domcontentloaded', { timeout: 10000 }).catch(() => {});
     await waitForDomStable(activePage, { timeout: 2500, quietMs: 250 });
 
+    const urlBefore = activePage.url();
     const ctx = await extractPageContext(activePage);
     const domText = formatContext(ctx);
     const base64  = await cdpScreenshot(activePage);
@@ -509,9 +510,12 @@ async function runAgentLoop(page, goal, onStep) {
 
       // Auto-follow new tabs opened by target=_blank clicks
       if (['click', 'click_xy'].includes(step.action)) {
-        await activePage.waitForTimeout(400);
+        // Wait longer (800ms) for browser to open new tab
+        await activePage.waitForTimeout(800);
         const allPages = activePage.context().pages();
+
         if (allPages.length > pagesBefore) {
+          // New tab detected — follow it
           const newPage = allPages[allPages.length - 1];
           removeDialogHandler(); // detach from old page
           await newPage.bringToFront().catch(() => {});
@@ -520,18 +524,46 @@ async function runAgentLoop(page, goal, onStep) {
           removeDialogHandler = installDialogHandler(activePage);
           logger.info(`Auto-followed new tab: ${newPage.url()}`);
           if (onStep) onStep(`⚡ Followed new tab`);
+        } else {
+          // No new tab — if we clicked a link element but URL is unchanged, extract href and navigate
+          const el = ctx.elements[step.index];
+          const urlAfter = activePage.url();
+          if (el?.locator?.pwRole === 'link' && urlAfter === urlBefore) {
+            const href = await activePage.evaluate((name) => {
+              const links = [...document.querySelectorAll('a[href]')];
+              const needle = (name || '').slice(0, 50).toLowerCase();
+              for (const a of links) {
+                const text = (a.textContent || a.getAttribute('aria-label') || '').trim().toLowerCase();
+                if (needle && text.includes(needle)) return a.href;
+              }
+              return null;
+            }, el.name).catch(() => null);
+
+            if (href && href.startsWith('http') && href !== urlBefore) {
+              logger.info(`Link click had no effect — navigating to href: ${href}`);
+              await activePage.goto(href, { waitUntil: 'domcontentloaded', timeout: 30000 }).catch(() => {});
+              await activePage.waitForLoadState('networkidle', { timeout: 8000 }).catch(() => {});
+              if (onStep) onStep(`⚡ Navigated via link href`);
+              // This counts as a successful navigation — reset loop counter
+              lastActionKey = '';
+              repeatCount = 0;
+              continue;
+            }
+          }
         }
       }
 
-      // Loop detection: same description 3× → stuck
-      if (desc === lastDesc) {
+      // Loop detection: same action+element 3× in a row → truly stuck
+      // Use action + index/coords as the key (more reliable than description text)
+      const actionKey = `${step.action}:${step.index ?? ''}:${step.x ?? ''}:${step.y ?? ''}`;
+      if (actionKey === lastActionKey) {
         if (++repeatCount >= 3) {
           removeDialogHandler();
-          return { success: false, message: `Stuck in loop on: "${desc}". Try rephrasing.`, steps: history };
+          return { success: false, message: `Stuck repeating the same step. Try rephrasing your command.`, steps: history };
         }
       } else {
         repeatCount = 0;
-        lastDesc = desc;
+        lastActionKey = actionKey;
       }
 
     } catch (err) {

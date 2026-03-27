@@ -57,10 +57,17 @@ Rules:
     - Employee search: "find employee John", "search agent Priya", "who is available"
     - Queue info: "show queues", "list queues", "queues dikhao"
     Set command param to the full natural language request including any IDs/names mentioned.
-11. For EVERYTHING ELSE interacting with the current browser page → use smart_act.
-12. smart_act is ONLY for browser pages — entering text, clicking buttons in a website, logging in, filling forms, OTP.
-13. Extract values the user mentions — phone numbers, emails, names, passwords — and include in command param.
-14. Never return "unknown".
+11. COMPOUND COMMANDS — use compound_act when the user wants 2 or more INDEPENDENT tasks on DIFFERENT sites/apps at the same time or in sequence. Examples:
+    - "open Flipkart on one tab and YouTube on one tab, play X on YouTube and search Y on Flipkart"
+    - "YouTube pe gaana bajao aur Flipkart pe kuch search karo"
+    - "open Gmail and Amazon, check my emails and search for headphones"
+    Break it into ordered steps. Each step must be a self-contained natural-language sub-command that could be parsed on its own. Steps involving the same site that depend on each other (search on Flipkart → filter results) are NOT compound — use smart_act for those.
+    params.steps must be a JSON array of strings. Example:
+    {"action":"compound_act","params":{"steps":["open YouTube","play Sochenge Tumhe Pyar Karun Ki Nahi song on YouTube","open Flipkart in new tab","search for Harry Potter book on Flipkart"]}}
+12. For EVERYTHING ELSE interacting with the current browser page → use smart_act.
+13. smart_act is ONLY for browser pages — entering text, clicking buttons in a website, logging in, filling forms, OTP.
+14. Extract values the user mentions — phone numbers, emails, names, passwords — and include in command param.
+15. Never return "unknown".
 
 Output schema:
 { "action": "<action_name>", "params": { ... } }

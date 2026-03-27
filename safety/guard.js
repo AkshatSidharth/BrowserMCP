@@ -166,6 +166,12 @@ const ALLOWED_ACTIONS = [
     params: { command: 'string — the full CRM task in natural language, e.g. "show me the 5 most recent pending tickets"' },
     destructive: false,
   },
+  {
+    name: 'compound_act',
+    description: 'Execute multiple independent tasks in sequence — e.g. "open YouTube and Flipkart in separate tabs and play a song on YouTube while searching for a book on Flipkart". Use ONLY when the user explicitly wants 2+ distinct tasks done simultaneously or in sequence on different sites/apps.',
+    params: { steps: 'array — ordered list of sub-commands, each a natural-language string, e.g. ["open YouTube", "play Sochenge Tumhe Pyar Karun song", "open Flipkart in new tab", "search for Harry Potter book on Flipkart"]' },
+    destructive: false,
+  },
 ];
 
 // Fast lookup map: action name → action config

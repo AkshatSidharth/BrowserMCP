@@ -66,6 +66,24 @@ async function runCommand(text, onStep) {
   } else if (intent.action === 'kapture_act') {
     const { dispatchCrmCommand } = require('../brain/kaptureAgent');
     result = await dispatchCrmCommand(intent.params.command, onStep);
+  } else if (intent.action === 'compound_act') {
+    // Run each sub-command sequentially, streaming steps back to UI
+    const steps = Array.isArray(intent.params.steps) ? intent.params.steps : [];
+    if (!steps.length) return { ok: false, message: 'compound_act: no steps provided.', intent };
+    const results = [];
+    for (let i = 0; i < steps.length; i++) {
+      const sub = steps[i];
+      if (onStep) onStep(`[${i + 1}/${steps.length}] ${sub}`);
+      const subResult = await runCommand(sub, onStep);
+      results.push({ step: sub, ...subResult });
+      if (!subResult.ok) {
+        // Continue on failure — don't abort the whole sequence
+        logger.warn(`compound_act step ${i + 1} failed: ${subResult.message}`);
+      }
+    }
+    const allOk = results.every(r => r.ok);
+    const summary = results.map((r, i) => `${i + 1}. ${r.step}: ${r.ok ? '✓' : '✗ ' + r.message}`).join('\n');
+    result = { success: allOk, message: summary };
   } else {
     const page = await getActivePage();
 
