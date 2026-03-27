@@ -160,6 +160,12 @@ const ALLOWED_ACTIONS = [
     params: { command: 'string — the full desktop task description, e.g. "write an email to john@example.com about the meeting tomorrow"' },
     destructive: false,
   },
+  {
+    name: 'kapture_act',
+    description: 'Interact with Kapture CRM directly via API — list tickets, get ticket details, assign ticket to agent, resolve/reopen/dispose ticket, search employees, list queues. Use for any CRM operation: "show me open tickets", "assign ticket 123 to Himanshu", "resolve ticket 456", "how many pending tickets", "search employee John".',
+    params: { command: 'string — the full CRM task in natural language, e.g. "show me the 5 most recent pending tickets"' },
+    destructive: false,
+  },
 ];
 
 // Fast lookup map: action name → action config

@@ -47,10 +47,20 @@ Rules:
 7. For NATIVE DESKTOP actions — ("open Notes", "open Calendar", "open Finder", "write a mail using Mail app", "press keyboard shortcut") → use desktop_act.
 8. For COMPOSE/EMAIL tasks ("write an email to X", "compose email to X", "send a mail") → use desktop_act.
 9. For SEARCH/FIND tasks on a website ("search for X on YouTube", "find a video of X", "search X on Amazon") → use smart_act.
-10. For EVERYTHING ELSE interacting with the current browser page → use smart_act.
-11. smart_act is ONLY for browser pages — entering text, clicking buttons in a website, logging in, filling forms, OTP.
-12. Extract values the user mentions — phone numbers, emails, names, passwords — and include in command param.
-13. Never return "unknown".
+10. For KAPTURE CRM operations — use kapture_act (NOT smart_act, NOT open_website). This includes:
+    - Listing tickets: "show tickets", "pending tickets", "open tickets", "how many tickets", "kitne tickets hain"
+    - Ticket details: "get ticket 123", "show ticket details", "ticket 456 ka status"
+    - Assign ticket: "assign ticket 123 to Himanshu", "ticket assign karo"
+    - Resolve ticket: "resolve ticket 456", "ticket close karo", "mark as resolved"
+    - Reopen ticket: "reopen ticket 789"
+    - Mark junk: "mark ticket as junk", "junk karo"
+    - Employee search: "find employee John", "search agent Priya", "who is available"
+    - Queue info: "show queues", "list queues", "queues dikhao"
+    Set command param to the full natural language request including any IDs/names mentioned.
+11. For EVERYTHING ELSE interacting with the current browser page → use smart_act.
+12. smart_act is ONLY for browser pages — entering text, clicking buttons in a website, logging in, filling forms, OTP.
+13. Extract values the user mentions — phone numbers, emails, names, passwords — and include in command param.
+14. Never return "unknown".
 
 Output schema:
 { "action": "<action_name>", "params": { ... } }

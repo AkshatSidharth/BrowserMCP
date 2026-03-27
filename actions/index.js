@@ -33,6 +33,7 @@ const registry = {
   click_captcha:   require('./clickCaptcha'),
   desktop_act:     require('./desktopAct'),
   close_tab:       require('./closeTab'),
+  kapture_act:     require('./kaptureAct'),
 };
 
 /**

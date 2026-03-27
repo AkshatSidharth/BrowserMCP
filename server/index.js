@@ -58,11 +58,14 @@ async function runCommand(text, onStep) {
     return { ok: false, message: `"${intent.action}" is destructive — run from CLI to confirm.`, intent };
   }
 
-  // desktop_act doesn't need a browser page — runs native desktop automation
+  // Actions that don't need a browser page
   let result;
   if (intent.action === 'desktop_act') {
     const { runDesktopAgent } = require('../brain/desktopAgent');
     result = await runDesktopAgent(intent.params.command, onStep);
+  } else if (intent.action === 'kapture_act') {
+    const { dispatchCrmCommand } = require('../brain/kaptureAgent');
+    result = await dispatchCrmCommand(intent.params.command, onStep);
   } else {
     const page = await getActivePage();
 
