@@ -251,6 +251,7 @@ Rules:
 13. For YouTube: fill search bar → press_on same index with Enter → wait for results → click best matching video title.
 14. scroll_xy to scroll inside a sidebar/panel at specific coordinates.
 15. WRONG PAGE: If the goal requires a specific site (YouTube, Flipkart, Gmail, etc.) but you are on a different page, use navigate to go there FIRST before attempting any actions. Example: goal="play the song again" but page=Google → navigate to https://www.youtube.com first.
+16. MEDIA CONTROLS (YouTube play/pause/mute/volume): After clicking a media control ONCE, immediately return done — do NOT click it again. The button label flips (Pause↔Play) AFTER the action — that flip confirms success, it does NOT mean the action failed. Example: clicked "Pause" → button now shows "Play" → video is paused → done.
 `.trim();
 
 // ─── 6. GPT-4o call ───────────────────────────────────────────────────────────
@@ -375,16 +376,28 @@ async function executeStep(page, elements, step) {
     }
 
     case 'press_on': {
-      // Press a key directly on a specific element — bypasses focus/dropdown issues
+      // Press a key directly on a specific element — bypasses focus/dropdown issues.
+      // For INPUT elements (textbox/searchbox/combobox) we use getByLabel/getByPlaceholder
+      // because getByText() does NOT match input values — inputs have no text content.
       if (!el) throw new Error(`No element at index ${step.index}`);
       const k = step.key || 'Enter';
+      const isInputRole = ['textbox','searchbox','combobox','spinbutton'].includes(el.locator.pwRole);
+
+      const strategies = isInputRole
+        ? [
+            () => page.getByRole(el.locator.pwRole, { name: el.locator.name, exact: true  }).first(),
+            () => page.getByRole(el.locator.pwRole, { name: el.locator.name, exact: false }).first(),
+            () => page.getByLabel(el.locator.name,       { exact: false }).first(),
+            () => page.getByPlaceholder(el.locator.name, { exact: false }).first(),
+          ]
+        : [
+            () => page.getByRole(el.locator.pwRole, { name: el.locator.name, exact: true  }).first(),
+            () => page.getByRole(el.locator.pwRole, { name: el.locator.name, exact: false }).first(),
+            () => page.getByText(el.locator.name, { exact: false }).first(),
+          ];
+
       let pressed = false;
-      // Try Playwright locator first (most reliable — keeps focus on element)
-      for (const strategy of [
-        () => page.getByRole(el.locator.pwRole, { name: el.locator.name, exact: true }).first(),
-        () => page.getByRole(el.locator.pwRole, { name: el.locator.name, exact: false }).first(),
-        () => page.getByText(el.locator.name, { exact: false }).first(),
-      ]) {
+      for (const strategy of strategies) {
         try {
           const loc = strategy();
           await loc.focus({ timeout: 2000 });
@@ -493,11 +506,10 @@ function installDialogHandler(page) {
 
 // ─── 9. Main agent loop ───────────────────────────────────────────────────────
 async function runAgentLoop(page, goal, onStep) {
-  const history     = [];
-  let   stepCount   = 0;
-  let   lastActionKey = '';
-  let   repeatCount = 0;
-  let   activePage  = page;
+  const history      = [];
+  let   stepCount    = 0;
+  const actionWindow = [];   // rolling window — last 12 action keys
+  let   activePage   = page;
 
   logger.info(`Agent loop: "${goal}"`);
 
@@ -589,17 +601,17 @@ async function runAgentLoop(page, goal, onStep) {
         }
       }
 
-      // Loop detection: same action+element 3× in a row → truly stuck
-      // Use action + index/coords as the key (more reliable than description text)
+      // Loop detection — rolling window of last 12 action keys.
+      // Catches both consecutive repeats (A-A-A) AND alternating patterns (A-B-A-B-A)
+      // that bypass a simple "same as last" check. Typical cause: element changes
+      // index on re-render, or button label flips (Play/Pause toggle on YouTube).
       const actionKey = `${step.action}:${step.index ?? ''}:${step.x ?? ''}:${step.y ?? ''}`;
-      if (actionKey === lastActionKey) {
-        if (++repeatCount >= 3) {
-          removeDialogHandler();
-          return { success: false, message: `Stuck repeating the same step. Try rephrasing your command.`, steps: history };
-        }
-      } else {
-        repeatCount = 0;
-        lastActionKey = actionKey;
+      actionWindow.push(actionKey);
+      if (actionWindow.length > 12) actionWindow.shift();
+      const keyCount = actionWindow.filter(k => k === actionKey).length;
+      if (keyCount >= 3) {
+        removeDialogHandler();
+        return { success: false, message: `Stuck repeating the same step. Try rephrasing your command.`, steps: history };
       }
 
     } catch (err) {

@@ -88,16 +88,16 @@ async function enrichWithCoords(page, elements) {
   // Batch: for each element, try to find its bounding rect in the DOM
   const coords = await page.evaluate((items) => {
     return items.map(({ role, name }) => {
-      // Try ARIA role + accessible-name heuristics
+      // Escape name for safe use in CSS attribute selectors.
+      // a11y names from page content can contain quotes and backslashes.
+      const safe = name.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+      // Try ARIA role + accessible-name heuristics (no :has-text — not native CSS)
       const selectors = [
-        `[role="${role}"][aria-label="${name}"]`,
-        `[role="${role}"][title="${name}"]`,
-        `button:has-text("${name.slice(0,30)}")`,
-        `a:has-text("${name.slice(0,30)}")`,
-        `label:has-text("${name.slice(0,30)}")`,
-        `[aria-label="${name}"]`,
-        `[placeholder="${name}"]`,
-        `[title="${name}"]`,
+        `[role="${role}"][aria-label="${safe}"]`,
+        `[role="${role}"][title="${safe}"]`,
+        `[aria-label="${safe}"]`,
+        `[placeholder="${safe}"]`,
+        `[title="${safe}"]`,
       ];
       for (const sel of selectors) {
         try {

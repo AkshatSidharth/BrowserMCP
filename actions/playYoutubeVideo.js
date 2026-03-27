@@ -1,14 +1,12 @@
 'use strict';
 
-const { navigateTo, getActivePage } = require('../browser/connect');
+const { navigateTo } = require('../browser/connect');
 const logger = require('../logger');
 
 /**
  * Action: play_youtube_video
- * Searches YouTube for a query and clicks the first video result to play it.
- *
- * @param {import('playwright').Page} _page
- * @param {{ query: string }} params
+ * Searches YouTube and plays the first matching video.
+ * Uses Playwright Locators — never stale unlike page.$() handles.
  */
 async function playYoutubeVideo(_page, params) {
   const { query } = params;
@@ -18,29 +16,31 @@ async function playYoutubeVideo(_page, params) {
   logger.info(`Searching YouTube for: "${query}"`);
   const page = await navigateTo(searchUrl);
 
-  // Wait for video results to load
-  await page.waitForSelector('ytd-video-renderer', { timeout: 10000 }).catch(() => {});
+  // Wait for at least one video card to render
+  await page.waitForSelector('ytd-video-renderer', { timeout: 15000 }).catch(() => {});
+  await page.waitForTimeout(400); // let React finish rendering titles
 
-  // Click the first video title link
-  const selectors = [
-    'ytd-video-renderer #video-title',         // standard search result
-    'ytd-video-renderer a#thumbnail',           // thumbnail fallback
-    'a#video-title',                            // older layout
+  // Playwright Locators — re-queried at interaction time, never stale
+  const candidates = [
+    page.locator('ytd-video-renderer a#video-title').first(),
+    page.locator('ytd-video-renderer #video-title').first(),
+    page.locator('ytd-rich-item-renderer a#video-title').first(),
+    page.locator('a#video-title').first(),
   ];
 
-  for (const sel of selectors) {
+  for (const loc of candidates) {
     try {
-      const el = await page.$(sel);
-      if (el) {
-        const title = await el.getAttribute('title') || await el.innerText().catch(() => '');
-        await el.click();
-        logger.info(`Playing video: "${title}"`);
-        return { success: true, message: `Playing: "${title}"` };
-      }
-    } catch { /* try next */ }
+      await loc.waitFor({ state: 'visible', timeout: 3000 });
+      const title = (await loc.getAttribute('title').catch(() => null))
+        || (await loc.textContent().catch(() => null))
+        || query;
+      await loc.click({ timeout: 5000 });
+      logger.info(`Playing video: "${title.trim()}"`);
+      return { success: true, message: `Playing: "${title.trim()}"` };
+    } catch { /* try next locator */ }
   }
 
-  return { success: false, message: 'Could not find a video to click. Try again or navigate manually.' };
+  return { success: false, message: 'Could not find a video to click. Try rephrasing the song name.' };
 }
 
 module.exports = playYoutubeVideo;
