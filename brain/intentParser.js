@@ -49,6 +49,23 @@ Rules:
 7. For NATIVE DESKTOP actions — ("open Notes", "open Calendar", "open Finder", "write a mail using Mail app", "press keyboard shortcut") → use desktop_act.
 8. For COMPOSE/EMAIL tasks ("write an email to X", "compose email to X", "send a mail") → use desktop_act.
 9. For PLAYING/WATCHING videos or music ("play X", "watch X", "play the song again", "replay", "play it again", "phir se chalao", "dobara bajao") → use play_youtube_video with the song/video name as query. If the user says "play again" or "replay" without naming a specific song, still use play_youtube_video and put the last-mentioned song name or a generic query "last played song". NEVER route play/replay commands to smart_act.
+16. For MEDIA CONTROLS on a playing video — pause, resume, mute, unmute, volume, seek, fullscreen → use media_act. NEVER use smart_act for these.
+    - "pause" / "pause the video" / "ruk jao" / "band karo" → media_act, operation=pause
+    - "play" / "resume" / "chalu karo" / "play karo" → media_act, operation=play
+    - "mute" / "sound band karo" / "silent karo" → media_act, operation=mute
+    - "unmute" / "sound chalu karo" / "volume on karo" → media_act, operation=unmute
+    - "volume up" / "louder" / "aawaz badhao" → media_act, operation=volume_up
+    - "volume down" / "softer" / "aawaz kam karo" → media_act, operation=volume_down
+    - "skip ahead" / "forward 10 seconds" / "aage jao" → media_act, operation=seek_forward
+    - "rewind" / "go back 10 seconds" / "peeche jao" → media_act, operation=seek_back
+    - "fullscreen" / "full screen" → media_act, operation=fullscreen
+    - "restart" / "from beginning" / "shuru se chalao" → media_act, operation=restart
+    IMPORTANT: "pause" alone, "mute" alone, "volume up" alone — all media_act. Do NOT use smart_act.
+17. For SCROLLING the current page → use scroll_act. NEVER use smart_act for scrolling.
+    - "scroll down" / "neeche jao" / "neeche scroll karo" → scroll_act, direction=down
+    - "scroll up" / "upar jao" / "upar scroll karo" → scroll_act, direction=up
+    - "go to top" / "top pe jao" / "shuru mein jao" → scroll_act, direction=top
+    - "go to bottom" / "neeche tak jao" / "end pe jao" → scroll_act, direction=bottom
 10. For KAPTURE CRM operations — use kapture_act (NOT smart_act, NOT open_website). This includes:
     - Listing tickets: "show tickets", "pending tickets", "open tickets", "how many tickets", "kitne tickets hain"
     - Ticket details: "get ticket 123", "show ticket details", "ticket 456 ka status"

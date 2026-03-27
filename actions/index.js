@@ -34,6 +34,8 @@ const registry = {
   desktop_act:     require('./desktopAct'),
   close_tab:       require('./closeTab'),
   kapture_act:     require('./kaptureAct'),
+  media_act:       require('./mediaAct'),
+  scroll_act:      require('./scrollAct'),
 };
 
 /**

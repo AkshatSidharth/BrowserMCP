@@ -252,6 +252,14 @@ Rules:
 14. scroll_xy to scroll inside a sidebar/panel at specific coordinates.
 15. WRONG PAGE: If the goal requires a specific site (YouTube, Flipkart, Gmail, etc.) but you are on a different page, use navigate to go there FIRST before attempting any actions. Example: goal="play the song again" but page=Google → navigate to https://www.youtube.com first.
 16. MEDIA CONTROLS (YouTube play/pause/mute/volume): After clicking a media control ONCE, immediately return done — do NOT click it again. The button label flips (Pause↔Play) AFTER the action — that flip confirms success, it does NOT mean the action failed. Example: clicked "Pause" → button now shows "Play" → video is paused → done.
+17. ONE-SHOT GOALS: If the goal is a single simple action (click a button, toggle something, dismiss a popup, like a video), return done IMMEDIATELY after doing it once. Do NOT re-examine the page or repeat. Examples:
+    - "like the video" → click Like → done
+    - "subscribe" → click Subscribe → done
+    - "add to cart" → click Add to Cart → done (do NOT also click checkout unless asked)
+    - "close the popup" → click X/close → done
+    - "click on X" → click it → done
+18. COUNT ACTIONS, NOT ATTEMPTS. If you have already performed the specific action the user asked (clicked a button, typed text, submitted a form), return done. Do NOT take more actions "to verify" — the page state visible in the NEXT screenshot already reflects what you just did.
+19. NEVER attempt the same (action, index) combination more than twice. On the third attempt at the same element, return failed with a clear explanation.
 `.trim();
 
 // ─── 6. GPT-4o call ───────────────────────────────────────────────────────────
@@ -592,9 +600,6 @@ async function runAgentLoop(page, goal, onStep) {
               await activePage.goto(href, { waitUntil: 'domcontentloaded', timeout: 30000 }).catch(() => {});
               await activePage.waitForLoadState('networkidle', { timeout: 8000 }).catch(() => {});
               if (onStep) onStep(`⚡ Navigated via link href`);
-              // This counts as a successful navigation — reset loop counter
-              lastActionKey = '';
-              repeatCount = 0;
               continue;
             }
           }

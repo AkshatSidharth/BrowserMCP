@@ -172,6 +172,21 @@ const ALLOWED_ACTIONS = [
     params: { steps: 'array — ordered list of sub-commands, each a natural-language string, e.g. ["open YouTube", "play Sochenge Tumhe Pyar Karun song", "open Flipkart in new tab", "search for Harry Potter book on Flipkart"]' },
     destructive: false,
   },
+  {
+    name: 'media_act',
+    description: 'Control video/audio playback on the current page. Use for pause, play, mute, unmute, volume up/down, seek forward/back, fullscreen, restart. NEVER use smart_act for these — use media_act directly.',
+    params: { operation: 'string — one of: pause, play, toggle, mute, unmute, toggle_mute, volume_up, volume_down, seek_forward, seek_back, fullscreen, restart' },
+    destructive: false,
+  },
+  {
+    name: 'scroll_act',
+    description: 'Scroll the current page. Use for "scroll down", "scroll up", "go to top", "go to bottom", "scroll left/right". NEVER use smart_act for scrolling.',
+    params: {
+      direction: 'string — one of: up, down, left, right, top, bottom',
+      amount: 'number — optional pixels to scroll (default 400)',
+    },
+    destructive: false,
+  },
 ];
 
 // Fast lookup map: action name → action config
