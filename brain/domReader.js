@@ -71,6 +71,30 @@ async function extractPageContext(page) {
       .filter(Boolean);
   });
 
+  // Enrich labels using the accessibility tree (Chrome DevTools MCP: takeSnapshot)
+  // page.accessibility.snapshot() surfaces names that aren't visible in the DOM
+  // (e.g. Flipkart filter checkboxes whose text is a sibling span, not inside the element)
+  try {
+    const a11y = await page.accessibility.snapshot({ interestingOnly: true });
+    if (a11y) {
+      const nodeMap = new Map(); // label → {role, name}
+      function walk(node) {
+        if (node.name) nodeMap.set((node.name || '').toLowerCase().trim(), node);
+        for (const child of node.children || []) walk(child);
+      }
+      walk(a11y);
+
+      // For any element with a weak/empty label, try to find a match in the a11y tree
+      for (const el of elements) {
+        if (!el.label || el.label.length < 2) {
+          const match = nodeMap.get(String(el.id).toLowerCase()) ||
+                        nodeMap.get(String(el.name).toLowerCase());
+          if (match && match.name) el.label = match.name.slice(0, 80);
+        }
+      }
+    }
+  } catch { /* accessibility API not available — continue without enrichment */ }
+
   return { url, title, elements };
 }
 
