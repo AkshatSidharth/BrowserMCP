@@ -13,6 +13,29 @@ const getClient = () => {
 
 const MAX_STEPS = 25;
 
+// ─── CDP-based screenshot (from Chrome DevTools MCP technique) ─────────────────
+// Uses Page.captureScreenshot CDP command with optimizeForSpeed:true
+// This bypasses Playwright's font-loading wait that causes YouTube timeouts.
+async function cdpScreenshot(page) {
+  let client;
+  try {
+    client = await page.context().newCDPSession(page);
+    const { data } = await client.send('Page.captureScreenshot', {
+      format: 'jpeg',
+      quality: 45,
+      optimizeForSpeed: true,
+    });
+    return data; // already base64
+  } catch (err) {
+    logger.warn(`CDP screenshot failed (${err.message}), falling back to Playwright`);
+    // Fallback to Playwright screenshot with short timeout
+    const buf = await page.screenshot({ type: 'jpeg', quality: 45, fullPage: false, timeout: 5000 }).catch(() => null);
+    return buf ? buf.toString('base64') : null;
+  } finally {
+    if (client) await client.detach().catch(() => {});
+  }
+}
+
 // ─── System prompt ─────────────────────────────────────────────────────────────
 const SYSTEM_PROMPT = `
 You are an autonomous browser agent completing a user's goal step by step.
@@ -184,10 +207,9 @@ async function runAgentLoop(page, goal, onStep) {
 
     const ctx = await extractPageContext(page);
     const domText = formatContext(ctx);
-    // Screenshot is best-effort — YouTube and some SPAs hang on font loading.
-    // If it times out, continue in DOM-only mode (no image sent to GPT-4o).
-    const screenshotBuf = await page.screenshot({ type: 'jpeg', quality: 50, fullPage: false, timeout: 6000 }).catch(() => null);
-    const base64 = screenshotBuf ? screenshotBuf.toString('base64') : null;
+    // CDP screenshot — uses Chrome DevTools Protocol directly, skips Playwright's
+    // font-loading wait that causes YouTube/SPA timeouts. Falls back gracefully.
+    const base64 = await cdpScreenshot(page);
     if (!base64) logger.warn(`Step ${stepCount}: screenshot unavailable, using DOM-only mode`);
 
     logger.debug(`Step ${stepCount} — page: ${ctx.url} — elements: ${ctx.elements.length}`);

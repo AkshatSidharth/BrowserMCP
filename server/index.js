@@ -146,8 +146,17 @@ app.post('/voice', upload.single('audio'), async (req, res) => {
 // ─── GET /screenshot ──────────────────────────────────────────────────────────
 app.get('/screenshot', async (req, res) => {
   try {
-    const page = await getActivePage();
-    const buf  = await page.screenshot({ fullPage: false });
+    const page   = await getActivePage();
+    // Use CDP directly (Chrome DevTools MCP technique) to avoid font-loading hang
+    let buf;
+    try {
+      const client = await page.context().newCDPSession(page);
+      const { data } = await client.send('Page.captureScreenshot', { format: 'png', optimizeForSpeed: true });
+      await client.detach().catch(() => {});
+      buf = Buffer.from(data, 'base64');
+    } catch {
+      buf = await page.screenshot({ fullPage: false, timeout: 8000 });
+    }
     res.setHeader('Content-Type', 'image/png');
     res.send(buf);
   } catch (err) {
