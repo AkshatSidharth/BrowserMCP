@@ -3,6 +3,7 @@
 require('dotenv').config();
 const { OpenAI } = require('openai');
 const { extractPageContext, formatContext } = require('./domReader');
+const { setActivePage } = require('../browser/connect');
 const logger = require('../logger');
 
 let _openai = null;
@@ -211,6 +212,8 @@ async function runAgentLoop(page, goal, onStep) {
   let stepCount = 0;
   let lastDesc  = '';
   let repeatCount = 0;
+  // `activePage` is mutable — updated when a click opens a new tab
+  let activePage = page;
 
   logger.info(`Agent loop started. Goal: "${goal}"`);
 
@@ -218,14 +221,14 @@ async function runAgentLoop(page, goal, onStep) {
     stepCount++;
 
     // 1. Observe current state
-    await page.waitForLoadState('domcontentloaded', { timeout: 8000 }).catch(() => {});
-    await page.waitForTimeout(600); // let JS render
+    await activePage.waitForLoadState('domcontentloaded', { timeout: 8000 }).catch(() => {});
+    await activePage.waitForTimeout(600); // let JS render
 
-    const ctx = await extractPageContext(page);
+    const ctx = await extractPageContext(activePage);
     const domText = formatContext(ctx);
     // CDP screenshot — uses Chrome DevTools Protocol directly, skips Playwright's
     // font-loading wait that causes YouTube/SPA timeouts. Falls back gracefully.
-    const base64 = await cdpScreenshot(page);
+    const base64 = await cdpScreenshot(activePage);
     if (!base64) logger.warn(`Step ${stepCount}: screenshot unavailable, using DOM-only mode`);
 
     logger.debug(`Step ${stepCount} — page: ${ctx.url} — elements: ${ctx.elements.length}`);
@@ -247,17 +250,32 @@ async function runAgentLoop(page, goal, onStep) {
     }
 
     // 3. Get fresh element handles for this page state
-    const handles = await page.$$(
+    const handles = await activePage.$$(
       'input:not([type="hidden"]):not([type="submit"]):not([type="button"]):not([type="checkbox"]):not([type="radio"]),' +
       'textarea, select, button, [role="button"], a[href]'
     );
 
-    // 4. Execute step
+    // 4. Execute step — track if a new tab opens
+    const pagesBefore = activePage.context().pages().length;
     try {
-      await executeStep(page, handles, step);
+      await executeStep(activePage, handles, step);
       const desc = step.description || step.action;
       history.push(desc);
       if (onStep) onStep(`⚡ ${desc}`);
+
+      // Auto-follow new tabs opened by clicks (e.g. Flipkart target="_blank" links)
+      if (['click', 'click_xy'].includes(step.action)) {
+        await activePage.waitForTimeout(600); // let the new tab open
+        const pagesAfter = activePage.context().pages();
+        if (pagesAfter.length > pagesBefore) {
+          const newPage = pagesAfter[pagesAfter.length - 1];
+          await newPage.bringToFront().catch(() => {});
+          setActivePage(newPage);
+          activePage = newPage;
+          logger.info(`New tab detected — following: ${newPage.url()}`);
+          if (onStep) onStep(`⚡ Followed new tab: ${newPage.url()}`);
+        }
+      }
 
       // Loop detection: same description 3 times in a row → stuck
       if (desc === lastDesc) {
@@ -278,8 +296,8 @@ async function runAgentLoop(page, goal, onStep) {
     }
 
     // 5. Wait for navigation / re-render
-    await page.waitForLoadState('domcontentloaded', { timeout: 8000 }).catch(() => {});
-    await page.waitForTimeout(800);
+    await activePage.waitForLoadState('domcontentloaded', { timeout: 8000 }).catch(() => {});
+    await activePage.waitForTimeout(800);
   }
 
   return {
