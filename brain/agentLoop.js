@@ -14,6 +14,31 @@ const getClient = () => {
 
 const MAX_STEPS = 25;
 
+// ─── DOM stability detection (Chrome DevTools MCP: waitForStableDom) ──────────
+// Injects a MutationObserver that resolves only once DOM stops mutating.
+// This replaces fixed timeouts after filter clicks, React re-renders, etc.
+async function waitForDomStable(page, { timeout = 3000, quietMs = 300 } = {}) {
+  try {
+    await page.evaluate(({ timeout, quietMs }) => {
+      return new Promise((resolve) => {
+        let timer = setTimeout(resolve, quietMs); // resolve immediately if DOM is quiet
+        const observer = new MutationObserver(() => {
+          clearTimeout(timer);
+          timer = setTimeout(resolve, quietMs); // reset countdown on each mutation
+        });
+        observer.observe(document.body, { childList: true, subtree: true, attributes: true });
+        // Hard timeout — don't wait forever
+        setTimeout(() => { observer.disconnect(); resolve(); }, timeout);
+        // Disconnect once stable
+        const orig = resolve;
+        resolve = () => { observer.disconnect(); orig(); };
+      });
+    }, { timeout, quietMs });
+  } catch {
+    // Page may have navigated — that's fine, continue
+  }
+}
+
 // ─── CDP-based screenshot (from Chrome DevTools MCP technique) ─────────────────
 // Uses Page.captureScreenshot CDP command with optimizeForSpeed:true
 // This bypasses Playwright's font-loading wait that causes YouTube timeouts.
@@ -271,9 +296,9 @@ async function runAgentLoop(page, goal, onStep) {
   while (stepCount < MAX_STEPS) {
     stepCount++;
 
-    // 1. Observe current state
+    // 1. Observe current state — wait for DOM to be stable before reading/screenshotting
     await activePage.waitForLoadState('domcontentloaded', { timeout: 8000 }).catch(() => {});
-    await activePage.waitForTimeout(600); // let JS render
+    await waitForDomStable(activePage, { timeout: 2000, quietMs: 250 });
 
     const ctx = await extractPageContext(activePage);
     const domText = formatContext(ctx);
@@ -300,10 +325,12 @@ async function runAgentLoop(page, goal, onStep) {
       return { success: false, message: step.message, steps: history };
     }
 
-    // 3. Get fresh element handles for this page state
+    // 3. Get fresh element handles — matches the expanded selector in domReader
     const handles = await activePage.$$(
-      'input:not([type="hidden"]):not([type="submit"]):not([type="button"]):not([type="checkbox"]):not([type="radio"]),' +
-      'textarea, select, button, [role="button"], a[href]'
+      'input:not([type="hidden"]),' +
+      'textarea, select, button, [role="button"], [role="checkbox"], [role="radio"],' +
+      '[role="menuitem"], [role="option"], [role="tab"], [role="switch"],' +
+      'a[href], label[for], [onclick]'
     );
 
     // 4. Execute step — track if a new tab opens
@@ -346,9 +373,10 @@ async function runAgentLoop(page, goal, onStep) {
       if (onStep) onStep(`⚠ ${errMsg}`);
     }
 
-    // 5. Wait for navigation / re-render
+    // 5. Wait for navigation + DOM to stabilise (Chrome DevTools MCP: waitForStableDom)
+    // waitForLoadState handles full navigations; waitForDomStable handles React re-renders
     await activePage.waitForLoadState('domcontentloaded', { timeout: 8000 }).catch(() => {});
-    await activePage.waitForTimeout(800);
+    await waitForDomStable(activePage, { timeout: 3000, quietMs: 300 });
   }
 
   return {
