@@ -145,7 +145,7 @@ app.post('/voice', upload.single('audio'), async (req, res) => {
     const response = await getOpenAI().audio.transcriptions.create({
       model: 'whisper-1',
       file: fs.createReadStream(audioPath),
-      language: 'en',
+      // No language lock — auto-detect handles English, Hindi, Hinglish
     });
     const text = response.text.trim();
     logger.info(`Transcribed: "${text}"`);

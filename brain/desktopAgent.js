@@ -382,7 +382,13 @@ async function runDesktopAgent(goal, onStep) {
         logger.info(`Desktop step OK: ${desc}${result ? ` → ${result}` : ''}`);
       } catch (err) {
         logger.warn(`Desktop step failed: ${err.message}`);
-        if (onStep) onStep(`⚠ ${step.description || step.type} failed: ${err.message}`);
+        let hint = err.message;
+        if (/not authorized|1743|AXError/.test(err.message)) {
+          hint = `Accessibility permission needed. Go to: System Settings → Privacy & Security → Accessibility → add Terminal (or your shell).`;
+        } else if (/Recording|screencapture|scrot/.test(err.message)) {
+          hint = `Screen Recording permission needed. Go to: System Settings → Privacy & Security → Screen Recording → add Terminal.`;
+        }
+        if (onStep) onStep(`⚠ ${step.description || step.type}: ${hint}`);
       }
 
       // Small pause between steps so UI has time to react
