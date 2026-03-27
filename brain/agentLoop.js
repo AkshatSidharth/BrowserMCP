@@ -50,15 +50,20 @@ Each turn you receive:
 You return ONE next action as JSON, or signal completion/failure.
 
 Available actions:
-- fill:      type text into an input field        → {"action":"fill",      "element_index":N, "value":"...",  "description":"..."}
-- click:     click a button/link by element index → {"action":"click",     "element_index":N,                "description":"..."}
-- click_xy:  click at screen coordinates (CDP)   → {"action":"click_xy",  "x":350, "y":240,                 "description":"..."}  ← use when element_index is unreliable
-- press:     press a keyboard key                 → {"action":"press",     "key":"Enter",                    "description":"..."}
-- scroll:    scroll the page                      → {"action":"scroll",    "direction":"down", "amount":400, "description":"..."}
-- wait:      wait for page/content to load        → {"action":"wait",      "ms":2000,                        "description":"..."}
-- navigate:  go to a URL directly                 → {"action":"navigate",  "url":"https://...",              "description":"..."}
-- done:      goal is fully achieved               → {"action":"done",      "message":"what was accomplished"}
-- failed:    cannot proceed, explain why          → {"action":"failed",    "message":"reason"}
+- fill:      type text into an input field          → {"action":"fill",     "element_index":N, "value":"...", "description":"..."}
+- click:     click element by index                 → {"action":"click",    "element_index":N,               "description":"..."}
+- click_xy:  click at pixel coords (any element)    → {"action":"click_xy", "x":350, "y":240,               "description":"..."}  ← for anything without a reliable index
+- hover:     hover over element (reveals menus)     → {"action":"hover",    "element_index":N,               "description":"..."}
+- hover_xy:  hover at pixel coords                  → {"action":"hover_xy", "x":350, "y":240,               "description":"..."}
+- drag_xy:   drag from one coord to another (slider)→ {"action":"drag_xy",  "x1":100,"y1":300,"x2":400,"y2":300, "description":"..."}
+- select:    choose option from <select> dropdown   → {"action":"select",   "element_index":N, "value":"option text", "description":"..."}
+- press:     press a keyboard key                   → {"action":"press",    "key":"Enter",                   "description":"..."}
+- scroll:    scroll the page                        → {"action":"scroll",   "direction":"down","amount":400, "description":"..."}
+- scroll_xy: scroll at a specific position on page  → {"action":"scroll_xy","x":300,"y":400,"direction":"down","amount":300, "description":"..."}
+- wait:      wait for content to load               → {"action":"wait",     "ms":2000,                       "description":"..."}
+- navigate:  go to a URL directly                   → {"action":"navigate", "url":"https://...",             "description":"..."}
+- done:      goal is fully achieved                 → {"action":"done",     "message":"what was accomplished"}
+- failed:    cannot proceed, explain why            → {"action":"failed",   "message":"reason"}
 
 Critical rules:
 1. Return ONLY valid JSON — no markdown, no explanation outside the JSON.
@@ -72,13 +77,16 @@ Critical rules:
 6. NEVER type placeholder values like <yourphonenumberhere>, [phone], [email], YOUR_NUMBER etc. If the actual value is not in the GOAL, return {"action":"failed","message":"Please say your phone number / email / password to enter it"}.
 7. For YouTube search: fill the search bar with the query, press Enter. After results load, scroll and click the best matching video title.
 8. For Flipkart/Amazon add-to-cart: look for "Add to Cart" or "Buy Now" buttons.
-9. Each element in the list has screen-coords @(x,y). Prefer click by element_index; use click_xy if the element_index click fails or the element is a canvas/overlay/slider that lacks an index.
+9. FILTER / CHECKBOX RULES (Flipkart sidebar filters, category chips etc.):
+   - Checkbox filters (Brand, Rating, Discount) in the element list have ○/✓ state shown. Click by element_index to toggle them.
+   - If a filter item isn't in the list → scroll_xy near the filter sidebar to reveal it, then click_xy on the checkbox you see in the screenshot.
+   - For price RANGE slider: use drag_xy — drag from the slider thumb's current position to the target position.
+   - Hover a section header to reveal sub-options if needed.
 10. After each fill, check if a "Next" or submit button needs to be clicked.
-11. If the goal is clearly complete (cart updated, order placed, product found, video playing, logged in), return done.
-12. Never repeat the same action more than once — if something failed, try a completely different approach or return failed.
-13. scroll direction: "down" to scroll down, "up" to scroll up. amount is pixels (default 400).
-14. For price/range sliders or canvas elements not in the list → use click_xy with the coordinates you see in the screenshot.
-`.trim();
+11. If the goal is clearly complete (cart updated, order placed, product found, video playing, logged in, filter applied), return done.
+12. Never repeat the same action more than once — if something failed, try click_xy at the exact pixel position you see in the screenshot.
+13. scroll direction: "down" or "up". amount = pixels (default 400).
+14. Use scroll_xy to scroll within a sidebar/panel without scrolling the whole page.`.trim();
 
 // ─── Get next step from GPT-4o ─────────────────────────────────────────────────
 async function getNextStep(goal, domText, base64, history) {
@@ -152,17 +160,60 @@ async function executeStep(page, handles, step) {
       break;
     }
     case 'click_xy': {
-      // Chrome DevTools MCP technique: CDP coordinate-based click
+      // Chrome DevTools MCP technique: Playwright mouse.click at coordinates
       // More reliable than element handles on SPAs where DOM updates make handles stale.
-      const { x, y } = step;
-      let cdpClient;
-      try {
-        cdpClient = await page.context().newCDPSession(page);
-        await cdpClient.send('Input.dispatchMouseEvent', { type: 'mousePressed', x, y, button: 'left', clickCount: 1 });
-        await cdpClient.send('Input.dispatchMouseEvent', { type: 'mouseReleased', x, y, button: 'left', clickCount: 1 });
-      } finally {
-        if (cdpClient) await cdpClient.detach().catch(() => {});
+      await page.mouse.click(step.x, step.y);
+      break;
+    }
+    case 'hover': {
+      const el = handles[element_index];
+      if (!el) throw new Error(`No element at index ${element_index}`);
+      await el.scrollIntoViewIfNeeded().catch(() => {});
+      await el.hover();
+      await page.waitForTimeout(400); // let dropdown/menu appear
+      break;
+    }
+    case 'hover_xy': {
+      await page.mouse.move(step.x, step.y);
+      await page.waitForTimeout(400);
+      break;
+    }
+    case 'drag_xy': {
+      // Drag from (x1,y1) to (x2,y2) — used for price range sliders
+      // Chrome DevTools MCP technique: mouse down → move → up
+      await page.mouse.move(step.x1, step.y1);
+      await page.mouse.down();
+      // Move in small increments so the slider JS detects the drag
+      const steps = 10;
+      const dx = (step.x2 - step.x1) / steps;
+      const dy = (step.y2 - step.y1) / steps;
+      for (let i = 1; i <= steps; i++) {
+        await page.mouse.move(step.x1 + dx * i, step.y1 + dy * i);
+        await page.waitForTimeout(30);
       }
+      await page.mouse.up();
+      await page.waitForTimeout(300);
+      break;
+    }
+    case 'select': {
+      // Native <select> element — use Playwright's selectOption
+      const el = handles[element_index];
+      if (!el) throw new Error(`No element at index ${element_index}`);
+      await el.selectOption({ label: String(step.value) }).catch(() =>
+        el.selectOption({ value: String(step.value) })
+      );
+      break;
+    }
+    case 'scroll_xy': {
+      // Scroll within a specific panel/sidebar without scrolling the whole page
+      const dir = step.direction === 'up' ? -1 : 1;
+      const amt = step.amount || 300;
+      await page.evaluate(({ x, y, dir, amt }) => {
+        const el = document.elementFromPoint(x, y);
+        if (el) el.scrollBy(0, dir * amt);
+        else window.scrollBy(0, dir * amt);
+      }, { x: step.x, y: step.y, dir, amt });
+      await page.waitForTimeout(400);
       break;
     }
     case 'press': {

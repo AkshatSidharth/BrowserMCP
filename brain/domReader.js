@@ -3,51 +3,73 @@
 /**
  * domReader.js
  * Extracts a structured, numbered list of all visible interactive elements
- * from the current page — inputs, buttons, links, selects.
- * This is sent to GPT-4o so it can reason about "what is on screen" and
- * decide exactly which elements to interact with.
+ * from the current page — inputs, buttons, links, selects, checkboxes.
+ * Includes bounding-box centres for coordinate-based clicking.
+ * This is sent to GPT-4o so it can reason about "what is on screen".
  */
+
+// Selector covers everything interactive including filter checkboxes / radio buttons
+const INTERACTIVE_SELECTOR =
+  'input:not([type="hidden"]),' +
+  'textarea, select, button, [role="button"], [role="checkbox"], [role="radio"],' +
+  '[role="menuitem"], [role="option"], [role="tab"], [role="switch"],' +
+  'a[href], label[for], [onclick]';
 
 async function extractPageContext(page) {
   const url   = page.url();
   const title = await page.title();
 
-  const elements = await page.$$eval(
-    'input:not([type="hidden"]):not([type="submit"]):not([type="button"]):not([type="checkbox"]):not([type="radio"]),' +
-    'textarea, select, button, [role="button"], a[href]',
-    (els) => {
-      return els
-        .map((el, i) => {
-          const rect = el.getBoundingClientRect();
-          if (rect.width === 0 || rect.height === 0) return null; // skip invisible
+  const elements = await page.$$eval(INTERACTIVE_SELECTOR, (els) => {
+    return els
+      .map((el, i) => {
+        const rect = el.getBoundingClientRect();
+        if (rect.width === 0 || rect.height === 0) return null; // skip invisible
 
-          // Best label: label[for] → aria-label → placeholder → innerText → name
-          let label = '';
-          if (el.id) {
-            const lbl = document.querySelector(`label[for="${CSS.escape(el.id)}"]`);
-            if (lbl) label = lbl.innerText.trim();
-          }
-          if (!label) label = el.getAttribute('aria-label') || '';
-          if (!label) label = el.getAttribute('placeholder') || '';
-          if (!label) label = (el.innerText || el.textContent || '').trim().replace(/\s+/g, ' ').slice(0, 60);
-          if (!label) label = el.getAttribute('name') || el.getAttribute('type') || '';
+        // Best label: label[for] → aria-label → aria-labelledby → placeholder → innerText → name
+        let label = '';
+        if (el.id) {
+          const lbl = document.querySelector(`label[for="${CSS.escape(el.id)}"]`);
+          if (lbl) label = lbl.innerText.trim();
+        }
+        if (!label) label = el.getAttribute('aria-label') || '';
+        if (!label && el.getAttribute('aria-labelledby')) {
+          const lblEl = document.getElementById(el.getAttribute('aria-labelledby'));
+          if (lblEl) label = lblEl.innerText.trim();
+        }
+        if (!label) label = el.getAttribute('placeholder') || '';
+        if (!label) label = (el.innerText || el.textContent || '').trim().replace(/\s+/g, ' ').slice(0, 80);
+        if (!label) label = el.getAttribute('name') || el.getAttribute('type') || el.tagName.toLowerCase();
 
-          return {
-            index:       i,
-            tag:         el.tagName.toLowerCase(),
-            type:        el.getAttribute('type') || '',
-            label:       label.trim(),
-            name:        el.getAttribute('name') || '',
-            id:          el.id || '',
-            placeholder: el.getAttribute('placeholder') || '',
-            // Centre of bounding box — used for CDP coordinate clicking
-            cx: Math.round(rect.left + rect.width  / 2),
-            cy: Math.round(rect.top  + rect.height / 2),
-          };
-        })
-        .filter(Boolean);
-    }
-  );
+        // ARIA role (more semantic than tag name)
+        const role = el.getAttribute('role') || el.tagName.toLowerCase();
+
+        // Checked state for checkboxes / radios
+        const checked = el.type === 'checkbox' || el.type === 'radio' || role === 'checkbox'
+          ? (el.checked || el.getAttribute('aria-checked') === 'true' ? '✓' : '○')
+          : '';
+
+        // Current value for inputs/selects
+        const value = el.tagName === 'SELECT'
+          ? el.options[el.selectedIndex]?.text || ''
+          : (el.type === 'checkbox' || el.type === 'radio' ? '' : el.value || '');
+
+        return {
+          index:   i,
+          tag:     el.tagName.toLowerCase(),
+          role,
+          type:    el.getAttribute('type') || '',
+          label:   label.trim(),
+          checked,
+          value:   value.trim().slice(0, 40),
+          name:    el.getAttribute('name') || '',
+          id:      el.id || '',
+          // Centre of bounding box — for coordinate clicking (Playwright mouse.click)
+          cx: Math.round(rect.left + rect.width  / 2),
+          cy: Math.round(rect.top  + rect.height / 2),
+        };
+      })
+      .filter(Boolean);
+  });
 
   return { url, title, elements };
 }
@@ -57,11 +79,12 @@ async function extractPageContext(page) {
  */
 function formatContext(ctx) {
   const elLines = ctx.elements.map(e => {
-    const attrs = [e.tag, e.type, e.name, e.id, e.placeholder].filter(Boolean).join('|');
-    return `  [${e.index}] "${e.label}"  (${attrs})  @(${e.cx},${e.cy})`;
+    const meta = [e.role !== e.tag ? e.role : '', e.type, e.name, e.id].filter(Boolean).join('|');
+    const state = [e.checked, e.value].filter(Boolean).join(' ');
+    return `  [${e.index}] ${e.checked || '·'} "${e.label}"  (${meta || e.tag})${state ? '  val:' + e.value : ''}  @(${e.cx},${e.cy})`;
   }).join('\n');
 
-  return `Page: ${ctx.title}\nURL: ${ctx.url}\n\nInteractive elements (index, label, attrs, screen-coords):\n${elLines || '  (none found)'}`;
+  return `Page: ${ctx.title}\nURL: ${ctx.url}\n\nInteractive elements (index · checked role label @coords):\n${elLines || '  (none found)'}`;
 }
 
 module.exports = { extractPageContext, formatContext };
