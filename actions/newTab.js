@@ -1,6 +1,7 @@
 'use strict';
 
 const { connectBrowser, setActivePage, LAUNCH_MODE } = require('../browser/connect');
+const { resolveSiteUrl } = require('./openWebsite');
 const logger = require('../logger');
 
 /**
@@ -25,7 +26,8 @@ async function newTab(_page, params) {
   logger.info(`Opened new tab`);
 
   if (url) {
-    const dest = url.includes('.') && !url.startsWith('http') ? `https://${url}` : url;
+    // Resolve site name → URL (handles "Flipkart", "YouTube", full URLs, etc.)
+    const dest = resolveSiteUrl(url);
     await page.goto(dest, { waitUntil: 'domcontentloaded', timeout: 30_000 });
     logger.info(`New tab navigated to ${dest}`);
     return { success: true, message: `Opened new tab at ${dest}.` };

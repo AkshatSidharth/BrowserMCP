@@ -5,29 +5,43 @@ const logger = require('../logger');
 
 // Common site name → URL mapping so users can say "open Instagram" naturally
 const SITE_MAP = {
-  instagram:  'https://www.instagram.com',
-  facebook:   'https://www.facebook.com',
-  twitter:    'https://www.twitter.com',
-  x:          'https://www.x.com',
-  reddit:     'https://www.reddit.com',
-  youtube:    'https://www.youtube.com',
-  google:     'https://www.google.com',
-  gmail:      'https://mail.google.com',
-  linkedin:   'https://www.linkedin.com',
-  whatsapp:   'https://web.whatsapp.com',
-  amazon:     'https://www.amazon.com',
-  netflix:    'https://www.netflix.com',
-  github:     'https://www.github.com',
-  notion:     'https://www.notion.so',
-  slack:      'https://app.slack.com',
-  kapture:    'https://app.kapturecrm.com',
-  crm:        'https://app.kapturecrm.com',
+  instagram:   'https://www.instagram.com',
+  facebook:    'https://www.facebook.com',
+  twitter:     'https://www.twitter.com',
+  x:           'https://www.x.com',
+  reddit:      'https://www.reddit.com',
+  youtube:     'https://www.youtube.com',
+  google:      'https://www.google.com',
+  gmail:       'https://mail.google.com',
+  linkedin:    'https://www.linkedin.com',
+  whatsapp:    'https://web.whatsapp.com',
+  amazon:      'https://www.amazon.in',
+  'amazon in': 'https://www.amazon.in',
+  'amazon us': 'https://www.amazon.com',
+  flipkart:    'https://www.flipkart.com',
+  netflix:     'https://www.netflix.com',
+  github:      'https://www.github.com',
+  notion:      'https://www.notion.so',
+  slack:       'https://app.slack.com',
+  spotify:     'https://open.spotify.com',
+  maps:        'https://maps.google.com',
+  'google maps':'https://maps.google.com',
+  kapture:     'https://app.kapturecrm.com',
+  crm:         'https://app.kapturecrm.com',
   'kapture cx': 'https://app.kapturecrm.com',
   'kapture crm':'https://app.kapturecrm.com',
   'capture cx': 'https://app.kapturecrm.com',
   'capture crm':'https://app.kapturecrm.com',
   kapturecrm:  'https://app.kapturecrm.com',
 };
+
+/** Resolve a site name or URL string → full https:// URL */
+function resolveSiteUrl(nameOrUrl) {
+  if (!nameOrUrl) return null;
+  if (nameOrUrl.startsWith('http')) return nameOrUrl;
+  const key = nameOrUrl.toLowerCase().trim().replace(/\.(com|org|net|io|in)$/, '');
+  return SITE_MAP[key] || SITE_MAP[key.replace(/\s+/g, '')] || (nameOrUrl.includes('.') ? `https://${nameOrUrl}` : `https://www.${nameOrUrl}.com`);
+}
 
 /**
  * Action: open_website
@@ -38,8 +52,7 @@ async function openWebsite(_page, params) {
   const { site } = params;
   if (!site) throw new Error('"site" param required.');
 
-  const key = site.toLowerCase().trim().replace(/\.(com|org|net|io)$/, '');
-  const url  = SITE_MAP[key] || SITE_MAP[key.replace(/\s+/g, '')] || (site.includes('.') ? `https://${site}` : `https://www.${site}.com`);
+  const url = resolveSiteUrl(site);
 
   // Extract hostname to check if this site is already open in a tab
   let hostname = '';
@@ -59,4 +72,5 @@ async function openWebsite(_page, params) {
   return { success: true, message: `Opened ${site}.` };
 }
 
+openWebsite.resolveSiteUrl = resolveSiteUrl;
 module.exports = openWebsite;
