@@ -1,5 +1,20 @@
 'use strict';
 
+/**
+ * agentLoop.js — Chrome DevTools MCP-inspired browser agent
+ *
+ * Key techniques borrowed from ChromeDevTools/chrome-devtools-mcp:
+ *
+ * 1. A11y-tree element identification  (domReader: takeSnapshot approach)
+ * 2. Playwright Locators — NEVER stale handles  (handle.asLocator().click())
+ * 3. Coordinate clicking via page.mouse  (clickAt: pptrPage.mouse.click)
+ * 4. waitForEventsAfterAction — nav detect + DOM stable  (WaitForHelper.ts)
+ * 5. Dialog auto-dismiss  (handleDialog tool)
+ * 6. Network idle check after navigation
+ * 7. Drag via incremental mouse moves  (drag tool)
+ * 8. CDP screenshot with optimizeForSpeed  (take_screenshot)
+ */
+
 require('dotenv').config();
 const { OpenAI } = require('openai');
 const { extractPageContext, formatContext } = require('./domReader');
@@ -12,119 +27,201 @@ const getClient = () => {
   return _openai;
 };
 
-const MAX_STEPS = 25;
+const MAX_STEPS = 30;
 
-// ─── DOM stability detection (Chrome DevTools MCP: waitForStableDom) ──────────
-// Injects a MutationObserver that resolves only once DOM stops mutating.
-// This replaces fixed timeouts after filter clicks, React re-renders, etc.
+// ─── 1. waitForEventsAfterAction  (Chrome DevTools MCP: WaitForHelper.ts) ────
+// Runs action → detects navigation → waits for nav + DOM stable.
+// Replaces all fixed waitForTimeout calls.
+async function waitForEventsAfterAction(page, actionFn) {
+  let navigationStarted = false;
+
+  // Listen for navigation before running the action
+  const navListener = () => { navigationStarted = true; };
+  page.once('framenavigated', navListener);
+
+  try {
+    await actionFn();
+  } finally {
+    page.off('framenavigated', navListener);
+  }
+
+  if (navigationStarted) {
+    // Wait for full page load after navigation
+    await page.waitForLoadState('domcontentloaded', { timeout: 15000 }).catch(() => {});
+    await page.waitForLoadState('networkidle', { timeout: 8000 }).catch(() => {});
+  } else {
+    // No navigation — wait for DOM to stop mutating (React re-renders, filter updates)
+    await waitForDomStable(page, { timeout: 3000, quietMs: 250 });
+  }
+}
+
+// ─── 2. DOM stability  (Chrome DevTools MCP: waitForStableDom) ───────────────
 async function waitForDomStable(page, { timeout = 3000, quietMs = 300 } = {}) {
   try {
     await page.evaluate(({ timeout, quietMs }) => {
       return new Promise((resolve) => {
-        let timer = setTimeout(resolve, quietMs); // resolve immediately if DOM is quiet
+        let done = false;
+        const finish = () => { if (!done) { done = true; observer.disconnect(); resolve(); } };
+        let timer = setTimeout(finish, quietMs);
         const observer = new MutationObserver(() => {
           clearTimeout(timer);
-          timer = setTimeout(resolve, quietMs); // reset countdown on each mutation
+          timer = setTimeout(finish, quietMs);
         });
-        observer.observe(document.body, { childList: true, subtree: true, attributes: true });
-        // Hard timeout — don't wait forever
-        setTimeout(() => { observer.disconnect(); resolve(); }, timeout);
-        // Disconnect once stable
-        const orig = resolve;
-        resolve = () => { observer.disconnect(); orig(); };
+        observer.observe(document.body || document.documentElement,
+          { childList: true, subtree: true, attributes: true, characterData: true });
+        setTimeout(finish, timeout); // hard cap
       });
     }, { timeout, quietMs });
-  } catch {
-    // Page may have navigated — that's fine, continue
-  }
+  } catch { /* page navigated — fine */ }
 }
 
-// ─── CDP-based screenshot (from Chrome DevTools MCP technique) ─────────────────
-// Uses Page.captureScreenshot CDP command with optimizeForSpeed:true
-// This bypasses Playwright's font-loading wait that causes YouTube timeouts.
+// ─── 3. CDP screenshot  (Chrome DevTools MCP: take_screenshot + optimizeForSpeed) ──
 async function cdpScreenshot(page) {
   let client;
   try {
     client = await page.context().newCDPSession(page);
     const { data } = await client.send('Page.captureScreenshot', {
-      format: 'jpeg',
-      quality: 45,
-      optimizeForSpeed: true,
+      format: 'jpeg', quality: 50, optimizeForSpeed: true,
     });
-    return data; // already base64
-  } catch (err) {
-    logger.warn(`CDP screenshot failed (${err.message}), falling back to Playwright`);
-    // Fallback to Playwright screenshot with short timeout
-    const buf = await page.screenshot({ type: 'jpeg', quality: 45, fullPage: false, timeout: 5000 }).catch(() => null);
+    return data;
+  } catch {
+    const buf = await page.screenshot({ type: 'jpeg', quality: 50, fullPage: false, timeout: 5000 }).catch(() => null);
     return buf ? buf.toString('base64') : null;
   } finally {
     if (client) await client.detach().catch(() => {});
   }
 }
 
-// ─── System prompt ─────────────────────────────────────────────────────────────
+// ─── 4. Playwright Locator execution  (Chrome DevTools MCP: handle.asLocator()) ─
+// Uses role+name to build a fresh locator — NEVER stale unlike $$() handles.
+async function clickByLocator(page, locator, fallbackX, fallbackY) {
+  const { pwRole, name } = locator;
+
+  // Try exact name match first, then partial
+  const strategies = [
+    () => page.getByRole(pwRole, { name, exact: true }).first(),
+    () => page.getByRole(pwRole, { name, exact: false }).first(),
+    () => page.getByText(name, { exact: true }).first(),
+    () => page.getByText(name, { exact: false }).first(),
+    () => page.getByLabel(name, { exact: false }).first(),
+    () => page.getByPlaceholder(name, { exact: false }).first(),
+  ];
+
+  for (const strategy of strategies) {
+    try {
+      const loc = strategy();
+      await loc.scrollIntoViewIfNeeded({ timeout: 2000 });
+      await loc.click({ timeout: 3000 });
+      return; // success
+    } catch { /* try next */ }
+  }
+
+  // Coordinate fallback
+  if (fallbackX != null && fallbackY != null) {
+    await page.mouse.click(fallbackX, fallbackY);
+    return;
+  }
+  throw new Error(`Could not click "${name}" (${pwRole}) — element not found`);
+}
+
+async function fillByLocator(page, locator, value, fallbackX, fallbackY) {
+  const { pwRole, name } = locator;
+
+  const strategies = [
+    () => page.getByRole(pwRole, { name, exact: true }).first(),
+    () => page.getByRole(pwRole, { name, exact: false }).first(),
+    () => page.getByLabel(name, { exact: false }).first(),
+    () => page.getByPlaceholder(name, { exact: false }).first(),
+    () => page.getByRole('textbox').first(),
+  ];
+
+  for (const strategy of strategies) {
+    try {
+      const loc = strategy();
+      await loc.scrollIntoViewIfNeeded({ timeout: 2000 });
+      // Force-clear React controlled inputs (native value setter technique)
+      await loc.evaluate((node) => {
+        const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value')?.set
+          || Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value')?.set;
+        if (setter) { setter.call(node, ''); node.dispatchEvent(new Event('input', { bubbles: true })); }
+        node.value = '';
+      }).catch(() => {});
+      await loc.fill(String(value), { timeout: 5000 });
+      return;
+    } catch { /* try next */ }
+  }
+
+  // Coordinate fallback: click field then type
+  if (fallbackX != null && fallbackY != null) {
+    await page.mouse.click(fallbackX, fallbackY);
+    await page.waitForTimeout(100);
+    await page.keyboard.press('Control+a');
+    await page.keyboard.press('Backspace');
+    await page.keyboard.type(String(value), { delay: 40 });
+    return;
+  }
+  throw new Error(`Could not fill "${name}" — element not found`);
+}
+
+// ─── 5. System prompt ─────────────────────────────────────────────────────────
 const SYSTEM_PROMPT = `
-You are an autonomous browser agent completing a user's goal step by step.
+You are an autonomous browser agent. You see a screenshot + list of interactive elements.
+Each element: [index] state role "name" val @(cx,cy)
 
-Each turn you receive:
-- A screenshot of the current page
-- Numbered interactive elements (inputs, buttons, links)
-- The overall goal
-- History of steps taken so far
+You return ONE JSON action per turn.
 
-You return ONE next action as JSON, or signal completion/failure.
+Actions:
+- click      → {"action":"click",     "index":N,                         "description":"..."}
+- fill       → {"action":"fill",      "index":N,      "value":"...",     "description":"..."}
+- click_xy   → {"action":"click_xy",  "x":300,"y":400,                   "description":"..."}  use for unlisted elements
+- hover      → {"action":"hover",     "index":N,                         "description":"..."}
+- hover_xy   → {"action":"hover_xy",  "x":300,"y":400,                   "description":"..."}
+- drag_xy    → {"action":"drag_xy",   "x1":100,"y1":300,"x2":400,"y2":300,"description":"..."}  for sliders
+- select     → {"action":"select",    "index":N,      "value":"opt text","description":"..."}
+- press      → {"action":"press",     "key":"Enter",                     "description":"..."}
+- type       → {"action":"type",      "text":"...",                      "description":"..."}  type at current focus
+- scroll     → {"action":"scroll",    "direction":"down","amount":400,   "description":"..."}
+- scroll_xy  → {"action":"scroll_xy", "x":100,"y":400,"direction":"down","amount":300,"description":"..."}
+- evaluate   → {"action":"evaluate",  "script":"document.title",         "description":"..."}
+- wait       → {"action":"wait",      "ms":1500,                         "description":"..."}
+- navigate   → {"action":"navigate",  "url":"https://...",               "description":"..."}
+- done       → {"action":"done",      "message":"..."}
+- failed     → {"action":"failed",    "message":"..."}
 
-Available actions:
-- fill:      type text into an input field          → {"action":"fill",     "element_index":N, "value":"...", "description":"..."}
-- click:     click element by index                 → {"action":"click",    "element_index":N,               "description":"..."}
-- click_xy:  click at pixel coords (any element)    → {"action":"click_xy", "x":350, "y":240,               "description":"..."}  ← for anything without a reliable index
-- hover:     hover over element (reveals menus)     → {"action":"hover",    "element_index":N,               "description":"..."}
-- hover_xy:  hover at pixel coords                  → {"action":"hover_xy", "x":350, "y":240,               "description":"..."}
-- drag_xy:   drag from one coord to another (slider)→ {"action":"drag_xy",  "x1":100,"y1":300,"x2":400,"y2":300, "description":"..."}
-- select:    choose option from <select> dropdown   → {"action":"select",   "element_index":N, "value":"option text", "description":"..."}
-- press:     press a keyboard key                   → {"action":"press",    "key":"Enter",                   "description":"..."}
-- scroll:    scroll the page                        → {"action":"scroll",   "direction":"down","amount":400, "description":"..."}
-- scroll_xy: scroll at a specific position on page  → {"action":"scroll_xy","x":300,"y":400,"direction":"down","amount":300, "description":"..."}
-- wait:      wait for content to load               → {"action":"wait",     "ms":2000,                       "description":"..."}
-- navigate:  go to a URL directly                   → {"action":"navigate", "url":"https://...",             "description":"..."}
-- done:      goal is fully achieved                 → {"action":"done",     "message":"what was accomplished"}
-- failed:    cannot proceed, explain why            → {"action":"failed",   "message":"reason"}
+Rules:
+1. Return ONLY valid JSON. No markdown.
+2. Always look at the screenshot first — identify exactly what page/state you are on.
+3. Dismiss cookie banners / popups before doing anything else.
+4. CAPTCHA visible → return failed immediately.
+5. OTP screen with no OTP in goal → return failed("OTP sent. Say 'enter OTP XXXXXX'").
+6. OTP in goal → for single box: fill with full code. For digit boxes: click first box then press each digit.
+7. NEVER type placeholder values like <phone>, [email], YOUR_NUMBER. Return failed and ask user for the actual value.
+8. FILTERS (checkboxes/chips in sidebar):
+   - Checkboxes show ✓ or ○ in the list. Click by index to toggle.
+   - If not in list → scroll_xy near the sidebar, then click_xy at the exact checkbox position.
+   - Price slider → drag_xy from current thumb position to target.
+9. After fill, check if you need to press Enter or click a submit/Next button.
+10. On e-commerce (Flipkart/Amazon):
+    - Search results: click the product title to open it.
+    - Product page: click "Add to Cart" or "Buy Now".
+    - Cart: click "Place Order" or "Checkout".
+11. Done when: goal fully achieved (item in cart, order placed, video playing, logged in, filter applied).
+12. If an action fails → try click_xy using the @(cx,cy) coordinates shown for that element.
+13. For YouTube: fill search bar → Enter → click best matching video title.
+14. scroll_xy to scroll inside a sidebar/panel at specific coordinates.
+`.trim();
 
-Critical rules:
-1. Return ONLY valid JSON — no markdown, no explanation outside the JSON.
-2. Look at the screenshot carefully — identify what page you are on.
-3. If a cookie banner / popup / overlay is blocking the page → click to dismiss it first.
-4. If a CAPTCHA appears → return {"action":"failed","message":"CAPTCHA detected, please solve it manually then retry"}.
-5. OTP RULES (important):
-   a. If you see an OTP input screen AND the GOAL does not contain a 4-6 digit OTP code → return {"action":"failed","message":"OTP sent to phone. Please say 'enter OTP XXXXXX' once you receive it"}. Do NOT try to fill digits yourself.
-   b. If the GOAL contains an OTP code (e.g. "OTP is 962342" or "enter OTP 962342") → fill it. For single-box OTP: fill element with the full code. For multi-box digit inputs (one box per digit): click the FIRST box, then use {"action":"press","key":"9"} for each digit one at a time — DO NOT use fill for individual digit boxes.
-   c. After entering OTP in ALL boxes, click Verify/Submit ONCE. If verify fails after 1 click → return failed, do not retry.
-6. NEVER type placeholder values like <yourphonenumberhere>, [phone], [email], YOUR_NUMBER etc. If the actual value is not in the GOAL, return {"action":"failed","message":"Please say your phone number / email / password to enter it"}.
-7. For YouTube search: fill the search bar with the query, press Enter. After results load, scroll and click the best matching video title.
-8. For Flipkart/Amazon add-to-cart: look for "Add to Cart" or "Buy Now" buttons.
-9. FILTER / CHECKBOX RULES (Flipkart sidebar filters, category chips etc.):
-   - Checkbox filters (Brand, Rating, Discount) in the element list have ○/✓ state shown. Click by element_index to toggle them.
-   - If a filter item isn't in the list → scroll_xy near the filter sidebar to reveal it, then click_xy on the checkbox you see in the screenshot.
-   - For price RANGE slider: use drag_xy — drag from the slider thumb's current position to the target position.
-   - Hover a section header to reveal sub-options if needed.
-10. After each fill, check if a "Next" or submit button needs to be clicked.
-11. If the goal is clearly complete (cart updated, order placed, product found, video playing, logged in, filter applied), return done.
-12. Never repeat the same action more than once — if something failed, try click_xy at the exact pixel position you see in the screenshot.
-13. scroll direction: "down" or "up". amount = pixels (default 400).
-14. Use scroll_xy to scroll within a sidebar/panel without scrolling the whole page.`.trim();
-
-// ─── Get next step from GPT-4o ─────────────────────────────────────────────────
+// ─── 6. GPT-4o call ───────────────────────────────────────────────────────────
 async function getNextStep(goal, domText, base64, history) {
   const historyText = history.length
-    ? `\nSteps completed so far:\n${history.map((h, i) => `${i + 1}. ${h}`).join('\n')}`
-    : '\nNo steps taken yet.';
+    ? `\nSteps done:\n${history.map((h, i) => `${i+1}. ${h}`).join('\n')}`
+    : '\nNo steps yet.';
 
-  const goalText = `GOAL: ${goal}${historyText}\n\nCurrent page:\n${domText}\n\nWhat is the single next action to take?`;
+  const goalText = `GOAL: ${goal}${historyText}\n\nCurrent page:\n${domText}\n\nNext single action?`;
 
-  // If screenshot is unavailable (e.g. page stuck on font loading), use text-only prompt
   const userContent = base64
     ? [
-        { type: 'image_url', image_url: { url: `data:image/jpeg;base64,${base64}`, detail: 'low' } },
+        { type: 'image_url', image_url: { url: `data:image/jpeg;base64,${base64}`, detail: 'high' } },
         { type: 'text', text: goalText },
       ]
     : goalText;
@@ -136,7 +233,7 @@ async function getNextStep(goal, domText, base64, history) {
     response_format: { type: 'json_object' },
     messages: [
       { role: 'system', content: SYSTEM_PROMPT },
-      { role: 'user', content: userContent },
+      { role: 'user',   content: userContent },
     ],
   });
 
@@ -147,241 +244,246 @@ async function getNextStep(goal, domText, base64, history) {
   }
 }
 
-// ─── Execute one step ──────────────────────────────────────────────────────────
-async function executeStep(page, handles, step) {
-  const { action, element_index, value, key, ms, url } = step;
+// ─── 7. Execute one step ──────────────────────────────────────────────────────
+async function executeStep(page, elements, step) {
+  const { action } = step;
+  const el = elements[step.index]; // may be undefined
 
   switch (action) {
+
     case 'fill': {
-      const el = handles[element_index];
-      if (!el) throw new Error(`No element at index ${element_index}`);
-      await el.scrollIntoViewIfNeeded().catch(() => {});
-      await el.click();
-      await page.waitForTimeout(100);
-
-      // Force-clear React/controlled inputs using native value setter
-      await el.evaluate((node) => {
-        const nativeSetter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value')?.set
-          || Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value')?.set;
-        if (nativeSetter) nativeSetter.call(node, '');
-        node.value = '';
-        node.dispatchEvent(new Event('input', { bubbles: true }));
-        node.dispatchEvent(new Event('change', { bubbles: true }));
-      }).catch(() => {});
-
-      // Also keyboard-clear as backup
-      await page.keyboard.press('Control+a');
-      await page.keyboard.press('Backspace');
-      await page.waitForTimeout(100);
-
-      await page.keyboard.type(String(value), { delay: 40 });
+      if (!el) throw new Error(`No element at index ${step.index}`);
+      await fillByLocator(page, el.locator, step.value, el.cx, el.cy);
       break;
     }
+
     case 'click': {
-      const el = handles[element_index];
-      if (!el) throw new Error(`No element at index ${element_index}`);
-      await el.scrollIntoViewIfNeeded().catch(() => {});
-      await el.click();
+      if (!el) throw new Error(`No element at index ${step.index}`);
+      await clickByLocator(page, el.locator, el.cx, el.cy);
       break;
     }
+
     case 'click_xy': {
-      // Chrome DevTools MCP technique: Playwright mouse.click at coordinates
-      // More reliable than element handles on SPAs where DOM updates make handles stale.
+      // Chrome DevTools MCP: pptrPage.mouse.click(x, y)
       await page.mouse.click(step.x, step.y);
       break;
     }
+
     case 'hover': {
-      const el = handles[element_index];
-      if (!el) throw new Error(`No element at index ${element_index}`);
-      await el.scrollIntoViewIfNeeded().catch(() => {});
-      await el.hover();
-      await page.waitForTimeout(400); // let dropdown/menu appear
+      if (!el) throw new Error(`No element at index ${step.index}`);
+      try {
+        const loc = page.getByRole(el.locator.pwRole, { name: el.locator.name, exact: false }).first();
+        await loc.scrollIntoViewIfNeeded({ timeout: 2000 });
+        await loc.hover({ timeout: 3000 });
+      } catch {
+        if (el.cx != null) await page.mouse.move(el.cx, el.cy);
+        else throw new Error(`Cannot hover element "${el.name}"`);
+      }
+      await page.waitForTimeout(400);
       break;
     }
+
     case 'hover_xy': {
       await page.mouse.move(step.x, step.y);
       await page.waitForTimeout(400);
       break;
     }
+
     case 'drag_xy': {
-      // Drag from (x1,y1) to (x2,y2) — used for price range sliders
-      // Chrome DevTools MCP technique: mouse down → move → up
+      // Chrome DevTools MCP: mouse down → incremental move → mouse up
       await page.mouse.move(step.x1, step.y1);
       await page.mouse.down();
-      // Move in small increments so the slider JS detects the drag
-      const steps = 10;
-      const dx = (step.x2 - step.x1) / steps;
-      const dy = (step.y2 - step.y1) / steps;
-      for (let i = 1; i <= steps; i++) {
+      const STEPS = 15;
+      const dx = (step.x2 - step.x1) / STEPS;
+      const dy = (step.y2 - step.y1) / STEPS;
+      for (let i = 1; i <= STEPS; i++) {
         await page.mouse.move(step.x1 + dx * i, step.y1 + dy * i);
-        await page.waitForTimeout(30);
+        await page.waitForTimeout(20);
       }
       await page.mouse.up();
-      await page.waitForTimeout(300);
       break;
     }
+
     case 'select': {
-      // Native <select> element — use Playwright's selectOption
-      const el = handles[element_index];
-      if (!el) throw new Error(`No element at index ${element_index}`);
-      await el.selectOption({ label: String(step.value) }).catch(() =>
-        el.selectOption({ value: String(step.value) })
-      );
+      if (!el) throw new Error(`No element at index ${step.index}`);
+      try {
+        const loc = page.getByRole('combobox', { name: el.locator.name, exact: false }).first();
+        await loc.selectOption({ label: String(step.value) })
+          .catch(() => loc.selectOption({ value: String(step.value) }));
+      } catch {
+        if (el.cx != null) {
+          await page.mouse.click(el.cx, el.cy);
+          await page.waitForTimeout(300);
+        }
+      }
       break;
     }
-    case 'scroll_xy': {
-      // Scroll within a specific panel/sidebar without scrolling the whole page
-      const dir = step.direction === 'up' ? -1 : 1;
-      const amt = step.amount || 300;
-      await page.evaluate(({ x, y, dir, amt }) => {
-        const el = document.elementFromPoint(x, y);
-        if (el) el.scrollBy(0, dir * amt);
-        else window.scrollBy(0, dir * amt);
-      }, { x: step.x, y: step.y, dir, amt });
-      await page.waitForTimeout(400);
-      break;
-    }
+
     case 'press': {
-      // For single chars (OTP digits), use keyboard.type so they register in React inputs
-      const k = key || 'Enter';
+      const k = step.key || 'Enter';
       if (k.length === 1) {
-        await page.keyboard.type(k, { delay: 80 });
+        await page.keyboard.type(k, { delay: 60 });
       } else {
         await page.keyboard.press(k);
       }
-      await page.waitForTimeout(120); // let focus auto-advance to next OTP box
       break;
     }
-    case 'wait': {
-      await page.waitForTimeout(ms || 1500);
+
+    case 'type': {
+      await page.keyboard.type(String(step.text), { delay: 40 });
       break;
     }
+
     case 'scroll': {
-      const direction = step.direction === 'up' ? -1 : 1;
-      const amount    = step.amount || 400;
-      await page.evaluate(({ dir, amt }) => window.scrollBy(0, dir * amt), { dir: direction, amt: amount });
-      await page.waitForTimeout(500);
+      const dir = step.direction === 'up' ? -1 : 1;
+      const amt = step.amount || 400;
+      await page.evaluate(({ dir, amt }) => window.scrollBy(0, dir * amt), { dir, amt });
       break;
     }
+
+    case 'scroll_xy': {
+      // Scroll inside a panel at specific screen coordinates
+      const dir = step.direction === 'up' ? -1 : 1;
+      const amt = step.amount || 300;
+      await page.evaluate(({ x, y, dir, amt }) => {
+        const target = document.elementFromPoint(x, y);
+        // Walk up to find scrollable ancestor
+        let el = target;
+        while (el && el !== document.body) {
+          const st = window.getComputedStyle(el);
+          if (/(auto|scroll)/.test(st.overflow + st.overflowY)) {
+            el.scrollBy(0, dir * amt);
+            return;
+          }
+          el = el.parentElement;
+        }
+        window.scrollBy(0, dir * amt);
+      }, { x: step.x, y: step.y, dir, amt });
+      break;
+    }
+
+    case 'evaluate': {
+      const result = await page.evaluate(step.script).catch(e => `Error: ${e.message}`);
+      logger.info(`evaluate result: ${JSON.stringify(result)}`);
+      break;
+    }
+
+    case 'wait': {
+      await page.waitForTimeout(step.ms || 1500);
+      break;
+    }
+
     case 'navigate': {
-      await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 30_000 });
+      await page.goto(step.url, { waitUntil: 'domcontentloaded', timeout: 30000 });
       break;
     }
+
     default:
       throw new Error(`Unknown action: ${action}`);
   }
 }
 
-// ─── Main agent loop ───────────────────────────────────────────────────────────
+// ─── 8. Auto-handle browser dialogs  (Chrome DevTools MCP: handleDialog) ─────
+function installDialogHandler(page) {
+  const handler = (dialog) => {
+    logger.info(`Auto-dismissing dialog: ${dialog.type()} "${dialog.message().slice(0, 80)}"`);
+    dialog.dismiss().catch(() => dialog.accept().catch(() => {}));
+  };
+  page.on('dialog', handler);
+  return () => page.off('dialog', handler);
+}
 
-/**
- * Run the agentic loop until goal is complete, failed, or max steps reached.
- * After EVERY action, re-reads the page so GPT-4o adapts to navigation,
- * popups, OTP screens, redirects — anything.
- *
- * @param {import('playwright').Page} page
- * @param {string} goal
- * @param {Function} [onStep]  optional callback(stepDesc) for real-time UI updates
- */
+// ─── 9. Main agent loop ───────────────────────────────────────────────────────
 async function runAgentLoop(page, goal, onStep) {
-  const history = [];
-  let stepCount = 0;
-  let lastDesc  = '';
-  let repeatCount = 0;
-  // `activePage` is mutable — updated when a click opens a new tab
-  let activePage = page;
+  const history     = [];
+  let   stepCount   = 0;
+  let   lastDesc    = '';
+  let   repeatCount = 0;
+  let   activePage  = page;
 
-  logger.info(`Agent loop started. Goal: "${goal}"`);
+  logger.info(`Agent loop: "${goal}"`);
+
+  // Auto-dismiss any dialogs that appear
+  let removeDialogHandler = installDialogHandler(activePage);
 
   while (stepCount < MAX_STEPS) {
     stepCount++;
 
-    // 1. Observe current state — wait for DOM to be stable before reading/screenshotting
-    await activePage.waitForLoadState('domcontentloaded', { timeout: 8000 }).catch(() => {});
-    await waitForDomStable(activePage, { timeout: 2000, quietMs: 250 });
+    // ── Observe ──────────────────────────────────────────────────────────────
+    await activePage.waitForLoadState('domcontentloaded', { timeout: 10000 }).catch(() => {});
+    await waitForDomStable(activePage, { timeout: 2500, quietMs: 250 });
 
     const ctx = await extractPageContext(activePage);
     const domText = formatContext(ctx);
-    // CDP screenshot — uses Chrome DevTools Protocol directly, skips Playwright's
-    // font-loading wait that causes YouTube/SPA timeouts. Falls back gracefully.
-    const base64 = await cdpScreenshot(activePage);
-    if (!base64) logger.warn(`Step ${stepCount}: screenshot unavailable, using DOM-only mode`);
+    const base64  = await cdpScreenshot(activePage);
+    if (!base64) logger.warn(`Step ${stepCount}: no screenshot, DOM-only mode`);
 
-    logger.debug(`Step ${stepCount} — page: ${ctx.url} — elements: ${ctx.elements.length}`);
+    logger.debug(`Step ${stepCount} — ${ctx.url} — ${ctx.elements.length} elements`);
 
-    // 2. Ask GPT-4o for next action
+    // ── Plan ─────────────────────────────────────────────────────────────────
     const step = await getNextStep(goal, domText, base64, history);
     logger.info(`Step ${stepCount}: ${JSON.stringify(step)}`);
 
     if (step.action === 'done') {
-      logger.info(`Goal achieved: ${step.message}`);
       if (onStep) onStep(`✓ Done: ${step.message}`);
+      removeDialogHandler();
       return { success: true, message: step.message, steps: history };
     }
-
     if (step.action === 'failed') {
-      logger.warn(`Agent failed: ${step.message}`);
       if (onStep) onStep(`⚠ ${step.message}`);
+      removeDialogHandler();
       return { success: false, message: step.message, steps: history };
     }
 
-    // 3. Get fresh element handles — matches the expanded selector in domReader
-    const handles = await activePage.$$(
-      'input:not([type="hidden"]),' +
-      'textarea, select, button, [role="button"], [role="checkbox"], [role="radio"],' +
-      '[role="menuitem"], [role="option"], [role="tab"], [role="switch"],' +
-      'a[href], label[for], [onclick]'
-    );
-
-    // 4. Execute step — track if a new tab opens
+    // ── Act ───────────────────────────────────────────────────────────────────
     const pagesBefore = activePage.context().pages().length;
     try {
-      await executeStep(activePage, handles, step);
+      // Chrome DevTools MCP: waitForEventsAfterAction wraps every action
+      await waitForEventsAfterAction(activePage, () => executeStep(activePage, ctx.elements, step));
+
       const desc = step.description || step.action;
       history.push(desc);
       if (onStep) onStep(`⚡ ${desc}`);
 
-      // Auto-follow new tabs opened by clicks (e.g. Flipkart target="_blank" links)
+      // Auto-follow new tabs opened by target=_blank clicks
       if (['click', 'click_xy'].includes(step.action)) {
-        await activePage.waitForTimeout(600); // let the new tab open
-        const pagesAfter = activePage.context().pages();
-        if (pagesAfter.length > pagesBefore) {
-          const newPage = pagesAfter[pagesAfter.length - 1];
+        await activePage.waitForTimeout(400);
+        const allPages = activePage.context().pages();
+        if (allPages.length > pagesBefore) {
+          const newPage = allPages[allPages.length - 1];
+          removeDialogHandler(); // detach from old page
           await newPage.bringToFront().catch(() => {});
           setActivePage(newPage);
           activePage = newPage;
-          logger.info(`New tab detected — following: ${newPage.url()}`);
-          if (onStep) onStep(`⚡ Followed new tab: ${newPage.url()}`);
+          removeDialogHandler = installDialogHandler(activePage);
+          logger.info(`Auto-followed new tab: ${newPage.url()}`);
+          if (onStep) onStep(`⚡ Followed new tab`);
         }
       }
 
-      // Loop detection: same description 3 times in a row → stuck
+      // Loop detection: same description 3× → stuck
       if (desc === lastDesc) {
-        repeatCount++;
-        if (repeatCount >= 3) {
-          logger.warn(`Agent stuck in loop on: "${desc}"`);
-          return { success: false, message: `Stuck repeating the same step. Try rephrasing your command.`, steps: history };
+        if (++repeatCount >= 3) {
+          removeDialogHandler();
+          return { success: false, message: `Stuck in loop on: "${desc}". Try rephrasing.`, steps: history };
         }
       } else {
         repeatCount = 0;
         lastDesc = desc;
       }
+
     } catch (err) {
       const errMsg = `${step.description || step.action} → FAILED: ${err.message}`;
       history.push(errMsg);
-      logger.warn(`Step execution failed: ${err.message}`);
+      logger.warn(`Step error: ${err.message}`);
       if (onStep) onStep(`⚠ ${errMsg}`);
     }
-
-    // 5. Wait for navigation + DOM to stabilise (Chrome DevTools MCP: waitForStableDom)
-    // waitForLoadState handles full navigations; waitForDomStable handles React re-renders
-    await activePage.waitForLoadState('domcontentloaded', { timeout: 8000 }).catch(() => {});
-    await waitForDomStable(activePage, { timeout: 3000, quietMs: 300 });
   }
 
+  removeDialogHandler();
   return {
     success: false,
-    message: `Reached max steps (${MAX_STEPS}). Completed: ${history.slice(-3).join(' → ')}`,
+    message: `Reached max steps (${MAX_STEPS}). Last: ${history.slice(-3).join(' → ')}`,
     steps: history,
   };
 }
