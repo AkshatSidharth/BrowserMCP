@@ -113,6 +113,8 @@ async function parseIntent(text, recentContext = '') {
   const userMessage = recentContext
     ? `Recent commands (use to resolve fragments/pronouns in current command):\n${recentContext}\n\nCurrent command: "${text}"`
     : text;
+
+  const response = await getClient().chat.completions.create({
     model: LLM_MODEL(),
     temperature: 0,            // Deterministic output
     max_completion_tokens: 256,
