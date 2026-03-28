@@ -275,6 +275,12 @@ Rules:
 18. COUNT ACTIONS, NOT ATTEMPTS. If you have already performed the specific action the user asked, return done. Do NOT take more actions "to verify".
 19. NEVER attempt the same (action, index) combination more than twice. On the third attempt, return failed with a clear explanation.
 20. BE DECISIVE. This is a voice assistant — the user cannot type replies. Do your best with what you have. Never ask questions, never say "I need more info". Either do it or return failed with a short reason.
+21. KAPTURE ADMIN / ADJETTER FLOW — when navigating adjetter.com/admin:
+    a) If on login page (adjetter.com/admin/ or login page showing "Sign in with Google") → click the "Sign in with Google" button. Then wait for navigation to complete.
+    b) If on home page (adjetter.com/admin/home.html) showing "LOGIN TO PARTNER EMPLOYEE" button → click it.
+    c) If on login-to-partner-employee page AND goal mentions "Select Admin Server" or "In server" → click the "Select Admin Server" dropdown (top-right header), then click the "In server" option.
+    d) GOOGLE AUTH POPUP: If a Google account picker popup appears (accounts.google.com), click the correct account. Do NOT return done — wait for the popup to redirect back.
+    e) After clicking "Select Admin Server" and choosing "In server", return done immediately — do not take further steps.
 `.trim();
 
 // ─── 6. GPT-4o call ───────────────────────────────────────────────────────────

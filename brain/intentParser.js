@@ -102,6 +102,8 @@ Rules:
     - "password is Pass@123" → fill_input, field="password", value="Pass@123"
     If no specific field is clear, use field="the active input field" and value=the number/text given.
 21. PRICE-FILTERED SEARCH — when user says "search for X under/below/less than Y price on Flipkart/Amazon", use smart_act with the natural language command as-is (e.g. "search for AC under 10000 on Flipkart"). The agent will interact with the price filter UI elements directly on the page.
+22. KOTAK / KAPTURE ADMIN LOGIN — when user says any of: "Kotak", "Kotak login", "login to Kotak", "open Kotak", "Kotak CRM", "voice bot for Kotak", "Kotak ke liye login", "Kapture admin login", "open Kapture admin" → smart_act with this exact command:
+    "Open Kapture Admin: navigate to https://adjetter.com/admin/home.html. If the page shows a login screen with Sign in with Google, click that button and wait for Google auth to complete. Once on the home page (adjetter.com/admin/home.html) showing MOBILE APP PRIVILEGE / LOGIN TO PARTNER EMPLOYEE / PARTNER SERVER DOMAIN LOCATION buttons, click the LOGIN TO PARTNER EMPLOYEE button. On the next page (login-to-partner-employee.html), click the Select Admin Server dropdown in the top-right header and choose the In server option."
 
 Output schema:
 { "action": "<action_name>", "params": { ... } }
