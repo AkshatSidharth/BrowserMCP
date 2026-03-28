@@ -91,6 +91,19 @@ Rules:
 13. smart_act is ONLY for browser pages — entering text, clicking buttons in a website, logging in, filling forms, OTP.
 14. Extract values the user mentions — phone numbers, emails, names, passwords — and include in command param.
 15. Never return "unknown".
+19. VALUE PROVISION — when the user gives a value for a field, use fill_input directly. Do NOT use smart_act.
+    Patterns: "my number is X", "number is X", "it is X", "fill it with X", "type X", "enter X", "X hai mera number",
+    "mera number X hai", "phone X", "email is X", "password is X"
+    → fill_input with field=detected field type, value=the actual value
+    Examples:
+    - "my number is 6299291331" → fill_input, field="phone number", value="6299291331"
+    - "mera number 9876543210 hai" → fill_input, field="phone number", value="9876543210"
+    - "email is john@gmail.com" → fill_input, field="email", value="john@gmail.com"
+    - "password is Pass@123" → fill_input, field="password", value="Pass@123"
+    If no specific field is clear, use field="the active input field" and value=the number/text given.
+20. When user says "enter my number" / "fill my number" / "type my number" WITHOUT stating the number,
+    check recent context first. If a number was mentioned recently, use fill_input with that number.
+    Only use smart_act if no number is available anywhere in context.
 
 Output schema:
 { "action": "<action_name>", "params": { ... } }

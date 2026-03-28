@@ -268,7 +268,12 @@ async function getNextStep(goal, domText, base64, history) {
     ? `\nSteps done:\n${history.map((h, i) => `${i+1}. ${h}`).join('\n')}`
     : '\nNo steps yet.';
 
-  const goalText = `GOAL: ${goal}${historyText}\n\nCurrent page:\n${domText}\n\nNext single action?`;
+  // Include recent voice commands so agent can resolve "my number", "it", etc.
+  const contextNote = recentContext
+    ? `\nRecent user commands (use to resolve "my number", "my email", "it", etc.):\n${recentContext}`
+    : '';
+
+  const goalText = `GOAL: ${goal}${contextNote}${historyText}\n\nCurrent page:\n${domText}\n\nNext single action?`;
 
   const userContent = base64
     ? [
@@ -513,7 +518,7 @@ function installDialogHandler(page) {
 }
 
 // ─── 9. Main agent loop ───────────────────────────────────────────────────────
-async function runAgentLoop(page, goal, onStep) {
+async function runAgentLoop(page, goal, onStep, recentContext = '') {
   const history      = [];
   let   stepCount    = 0;
   const actionWindow = [];   // rolling window — last 12 action keys

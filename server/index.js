@@ -118,7 +118,7 @@ async function runCommand(text, onStep, _isSubCommand = false) {
         result = { success: false, message: 'No browser page is open. Say "open YouTube" or a website first.' };
       } else {
         await page.waitForLoadState('domcontentloaded', { timeout: 5000 }).catch(() => {});
-        result = await runAgentLoop(page, intent.params.command, onStep);
+        result = await runAgentLoop(page, intent.params.command, onStep, context);
       }
     } else {
       result = await executeAction(intent.action, page, intent.params);
