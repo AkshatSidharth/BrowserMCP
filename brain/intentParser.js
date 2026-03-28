@@ -76,6 +76,10 @@ Rules:
     - Employee search: "find employee John", "search agent Priya", "who is available"
     - Queue info: "show queues", "list queues", "queues dikhao"
     Set command param to the full natural language request including any IDs/names mentioned.
+18. TAB SWITCH + ACTION — when the user says "go to X tab and [do something]" or "switch to X and [do something]", use compound_act with two steps: first switch tab, then the action.
+    - "go to YouTube tab and pause" → {"action":"compound_act","params":{"steps":["open YouTube","pause the video"]}}
+    - "YouTube tab pe jao aur pause karo" → {"action":"compound_act","params":{"steps":["open YouTube","pause the video"]}}
+    - "switch to Flipkart and search for shoes" → {"action":"compound_act","params":{"steps":["open Flipkart","search for shoes on Flipkart"]}}
 11. COMPOUND COMMANDS — use compound_act when the user wants 2 or more INDEPENDENT tasks on DIFFERENT sites/apps at the same time or in sequence. Examples:
     - "open Flipkart on one tab and YouTube on one tab, play X on YouTube and search Y on Flipkart"
     - "YouTube pe gaana bajao aur Flipkart pe kuch search karo"
@@ -101,17 +105,21 @@ Output schema:
  * @param {string} text  Raw transcribed (or typed) user command
  * @returns {{ action: string, params: Record<string, string> }}
  */
-async function parseIntent(text) {
+async function parseIntent(text, recentContext = '') {
   logger.debug(`Parsing intent for: "${text}"`);
 
-  const response = await getClient().chat.completions.create({
+  // Build user message — if we have recent context, prepend it so the LLM
+  // can resolve fragments like "it", "again", "the song", "any Eminem song"
+  const userMessage = recentContext
+    ? `Recent commands (use to resolve fragments/pronouns in current command):\n${recentContext}\n\nCurrent command: "${text}"`
+    : text;
     model: LLM_MODEL(),
     temperature: 0,            // Deterministic output
     max_completion_tokens: 256,
     response_format: { type: 'json_object' },
     messages: [
       { role: 'system', content: buildSystemPrompt() },
-      { role: 'user',   content: text },
+      { role: 'user',   content: userMessage },
     ],
   });
 

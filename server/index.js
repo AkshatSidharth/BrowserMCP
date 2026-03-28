@@ -42,12 +42,34 @@ function sendSSE(res, data) {
   res.write(`data: ${JSON.stringify(data)}\n\n`);
 }
 
+// ─── Conversational context window ────────────────────────────────────────────
+// Rolling window of last 5 raw commands. Passed to the intent parser so it can
+// resolve fragments ("it", "again", "the song", "any Eminem song" after "play").
+
+const _cmdHistory = [];
+
+function pushHistory(text) {
+  _cmdHistory.push(text);
+  if (_cmdHistory.length > 5) _cmdHistory.shift();
+}
+
+function getRecentContext() {
+  // Only include the last 3 (enough context, not too noisy)
+  return _cmdHistory.slice(-3).map((c, i) => `${i + 1}. "${c}"`).join('\n');
+}
+
 // ─── Core command runner ───────────────────────────────────────────────────────
 
-async function runCommand(text, onStep) {
+async function runCommand(text, onStep, _isSubCommand = false) {
   if (!text?.trim()) return { ok: false, message: 'Empty command.' };
 
-  const intent = await parseIntent(text.trim());
+  // Build context from recent history (skip for sub-commands — they already
+  // have the right context baked in from compound_act splitting)
+  const context = _isSubCommand ? '' : getRecentContext();
+  const intent  = await parseIntent(text.trim(), context);
+
+  // Track in history (top-level commands only)
+  if (!_isSubCommand) pushHistory(text.trim());
   logger.info(`Command: "${text}" → action="${intent.action}" params=${JSON.stringify(intent.params)}`);
 
   const { ok, reason } = validateAction(intent);
@@ -74,7 +96,7 @@ async function runCommand(text, onStep) {
     for (let i = 0; i < steps.length; i++) {
       const sub = steps[i];
       if (onStep) onStep(`[${i + 1}/${steps.length}] ${sub}`);
-      const subResult = await runCommand(sub, onStep);
+      const subResult = await runCommand(sub, onStep, true);
       results.push({ step: sub, ...subResult });
       if (!subResult.ok) {
         // Continue on failure — don't abort the whole sequence

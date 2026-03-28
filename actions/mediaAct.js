@@ -5,10 +5,11 @@ const logger = require('../logger');
 /**
  * Action: media_act
  * Direct video/audio control via JS — bypasses the agent loop entirely.
- * Operations: pause, play, toggle, mute, unmute, volume_up, volume_down,
- *             seek_forward, seek_back, fullscreen, exit_fullscreen, restart
  *
- * This action NEVER takes a screenshot, NEVER calls GPT — it's a one-shot JS call.
+ * KEY BEHAVIOUR: if the current page has no video, automatically scans
+ * all open tabs and switches to the first one that has a video element.
+ * This fixes "pause" failing when the user is on Google but YouTube is
+ * open in another tab.
  */
 async function mediaAct(page, { operation }) {
   if (!operation) throw new Error('"operation" param required for media_act.');
@@ -16,23 +17,54 @@ async function mediaAct(page, { operation }) {
   const op = operation.toLowerCase().trim();
   logger.info(`media_act: ${op}`);
 
-  const result = await page.evaluate((op) => {
-    // Find the most prominent video on the page
+  // ── Find the right tab ────────────────────────────────────────────────────
+  // Check if current page has a video. If not, scan all tabs.
+  let targetPage = page;
+
+  const hasVideoOnPage = async (pg) => {
+    try {
+      return await pg.evaluate(() => document.querySelectorAll('video').length > 0);
+    } catch { return false; }
+  };
+
+  if (!(await hasVideoOnPage(page))) {
+    logger.info('media_act: no video on current page — scanning other tabs');
+    try {
+      const allPages = page.context().pages();
+      for (const pg of allPages) {
+        if (pg === page || pg.isClosed()) continue;
+        if (await hasVideoOnPage(pg)) {
+          targetPage = pg;
+          logger.info(`media_act: found video on tab: ${pg.url()}`);
+          // Switch active page to this tab
+          const { setActivePage } = require('../browser/connect');
+          setActivePage(pg);
+          await pg.bringToFront().catch(() => {});
+          if (process.platform === 'darwin') {
+            const { exec } = require('child_process');
+            exec(`osascript -e 'tell application "Google Chrome" to activate'`).unref?.();
+          }
+          break;
+        }
+      }
+    } catch (err) {
+      logger.warn(`media_act tab scan failed: ${err.message}`);
+    }
+  }
+
+  // ── Execute on the target page ────────────────────────────────────────────
+  const result = await targetPage.evaluate((op) => {
     const videos = Array.from(document.querySelectorAll('video'));
     if (!videos.length) return { found: false };
 
-    // Prefer the video that is actually playing or has the most area
+    // Prefer playing video, then largest visible area
     const v = videos.sort((a, b) => {
-      // Prioritise playing video
       if (!a.paused && b.paused) return -1;
       if (a.paused && !b.paused) return 1;
-      // Then by visible area
       const ra = a.getBoundingClientRect();
       const rb = b.getBoundingClientRect();
       return (rb.width * rb.height) - (ra.width * ra.height);
     })[0];
-
-    const before = { paused: v.paused, muted: v.muted, volume: v.volume, time: v.currentTime };
 
     switch (op) {
       case 'pause':         v.pause(); break;
@@ -60,11 +92,11 @@ async function mediaAct(page, { operation }) {
     }
 
     const after = { paused: v.paused, muted: v.muted, volume: Math.round(v.volume * 100), time: Math.round(v.currentTime) };
-    return { found: true, before, after };
+    return { found: true, after, url: location.href };
   }, op);
 
   if (!result.found) {
-    return { success: false, message: 'No video found on the page.' };
+    return { success: false, message: 'No video found on any open tab.' };
   }
   if (result.error) {
     return { success: false, message: result.error };
