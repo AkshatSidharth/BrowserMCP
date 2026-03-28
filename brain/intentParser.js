@@ -101,10 +101,7 @@ Rules:
     - "email is john@gmail.com" → fill_input, field="email", value="john@gmail.com"
     - "password is Pass@123" → fill_input, field="password", value="Pass@123"
     If no specific field is clear, use field="the active input field" and value=the number/text given.
-21. PRICE-FILTERED SEARCH — when user says "search for X under/below/less than Y price on Flipkart/Amazon", use smart_act but set the command to include the full filtered URL navigation. Examples:
-    - "AC under 10000 on Flipkart" → smart_act, command="navigate to https://www.flipkart.com/search?q=AC&p[]=facets.price_range.from%3DMin&p[]=facets.price_range.to%3D10000"
-    - "laptop under 50000 on Flipkart" → smart_act, command="navigate to https://www.flipkart.com/search?q=laptop&p[]=facets.price_range.from%3DMin&p[]=facets.price_range.to%3D50000"
-    Build the URL with the exact price value the user stated.
+21. PRICE-FILTERED SEARCH — when user says "search for X under/below/less than Y price on Flipkart/Amazon", use smart_act with the natural language command as-is (e.g. "search for AC under 10000 on Flipkart"). The agent will interact with the price filter UI elements directly on the page.
 
 Output schema:
 { "action": "<action_name>", "params": { ... } }

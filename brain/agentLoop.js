@@ -243,13 +243,12 @@ Rules:
    - Step 2: press_on the SAME index N with key "Enter" — this fires Enter directly on the input, bypassing any dropdown that may have stolen focus.
    - NEVER use plain press{key:Enter} after fill — focus may have shifted to a suggestion dropdown.
    - If press_on also fails, use click_xy on the search submit button coordinates.
-10. PRICE FILTERS — CRITICAL: NEVER drag the price slider. It is unreliable. Instead:
-    a) If there are Min/Max price SELECT DROPDOWNS on the page → use the "select" action on the max-price dropdown to pick the closest value (e.g. select "₹10,000" or "10000").
-    b) If the site is Flipkart and you need a price range: use navigate to add price params to the current URL.
-       Flipkart price URL format: append &p[]=facets.price_range.from%3DMin&p[]=facets.price_range.to%3DVALUE
-       Example for AC under ₹10000: navigate to https://www.flipkart.com/search?q=AC&p[]=facets.price_range.from%3DMin&p[]=facets.price_range.to%3D10000
-    c) For Amazon: append &rh=p_36%3A-VALUE00 (e.g. under ₹10000 = &rh=p_36%3A-1000000)
-    ALWAYS prefer URL navigation or dropdown select over slider dragging for price filters.
+10. PRICE SLIDERS and RANGE INPUTS — never use drag_xy on sliders, it breaks on Retina displays and resizing. Instead use the "evaluate" action to set the value directly via JavaScript:
+    For MAX price slider (set to e.g. 10000):
+    {"action":"evaluate","script":"(function(){const sliders=document.querySelectorAll('input[type=\\"range\\"]');const s=sliders[sliders.length-1];if(!s)return;const set=Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set;set.call(s,'10000');s.dispatchEvent(new Event('input',{bubbles:true}));s.dispatchEvent(new Event('change',{bubbles:true}));})()","description":"Set max price slider to 10000"}
+    For MIN price slider (first range input): use sliders[0] instead of sliders[sliders.length-1].
+    If there are also price SELECT DROPDOWNS (Min / ₹50000+), prefer using "select" action on those — they are even more reliable than JS slider setting.
+    ALWAYS use evaluate or select for price filters. NEVER drag_xy on sliders.
     - Search results: click the product title to open it. If click does nothing, try click_xy at the product's @(cx,cy) coordinates.
     - Product page: click "Add to Cart" or "Buy Now".
     - Cart: click "Place Order" or "Checkout".
