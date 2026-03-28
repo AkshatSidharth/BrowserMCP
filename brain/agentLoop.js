@@ -230,9 +230,10 @@ Rules:
 2. Always look at the screenshot first — identify exactly what page/state you are on.
 3. Dismiss cookie banners / popups before doing anything else.
 4. CAPTCHA visible → return failed immediately.
-5. OTP screen with no OTP in goal → return failed("OTP sent. Say 'enter OTP XXXXXX'").
+5. OTP screen → if OTP digits are in the goal/context, enter them. If not, return done("OTP field is ready — say the OTP digits").
 6. OTP in goal → for single box: fill with full code. For digit boxes: click first box then press each digit.
-7. NEVER type placeholder values like <phone>, [email], YOUR_NUMBER. Return failed and ask user for the actual value.
+7. VALUES (phone, email, password, name): If a value is present anywhere in the GOAL text or recent context, use it immediately — do NOT ask the user for it. If genuinely no value exists anywhere in the goal or context, focus the field and return done("Field is focused and ready — say the value to fill in").
+   NEVER return a message asking the user to provide a value. NEVER refuse to proceed. Just focus the field and say it's ready.
 8. FILTERS (checkboxes/chips in sidebar):
    - Checkboxes show ✓ or ○ in the list. Click by index to toggle.
    - If not in list → scroll_xy near the sidebar, then click_xy at the exact checkbox position.
@@ -246,20 +247,16 @@ Rules:
     - Search results: click the product title to open it. If click does nothing, try click_xy at the product's @(cx,cy) coordinates.
     - Product page: click "Add to Cart" or "Buy Now".
     - Cart: click "Place Order" or "Checkout".
-11. Done when: goal fully achieved (item in cart, order placed, video playing, logged in, filter applied).
+11. Done when: goal fully achieved (item in cart, order placed, video playing, logged in, filter applied, field filled, button clicked).
 12. If an action fails → try click_xy using the @(cx,cy) coordinates shown for that element.
 13. For YouTube: fill search bar → press_on same index with Enter → wait for results → click best matching video title.
 14. scroll_xy to scroll inside a sidebar/panel at specific coordinates.
-15. WRONG PAGE: If the goal requires a specific site (YouTube, Flipkart, Gmail, etc.) but you are on a different page, use navigate to go there FIRST before attempting any actions. Example: goal="play the song again" but page=Google → navigate to https://www.youtube.com first.
-16. MEDIA CONTROLS (YouTube play/pause/mute/volume): After clicking a media control ONCE, immediately return done — do NOT click it again. The button label flips (Pause↔Play) AFTER the action — that flip confirms success, it does NOT mean the action failed. Example: clicked "Pause" → button now shows "Play" → video is paused → done.
-17. ONE-SHOT GOALS: If the goal is a single simple action (click a button, toggle something, dismiss a popup, like a video), return done IMMEDIATELY after doing it once. Do NOT re-examine the page or repeat. Examples:
-    - "like the video" → click Like → done
-    - "subscribe" → click Subscribe → done
-    - "add to cart" → click Add to Cart → done (do NOT also click checkout unless asked)
-    - "close the popup" → click X/close → done
-    - "click on X" → click it → done
-18. COUNT ACTIONS, NOT ATTEMPTS. If you have already performed the specific action the user asked (clicked a button, typed text, submitted a form), return done. Do NOT take more actions "to verify" — the page state visible in the NEXT screenshot already reflects what you just did.
-19. NEVER attempt the same (action, index) combination more than twice. On the third attempt at the same element, return failed with a clear explanation.
+15. WRONG PAGE: If the goal requires a specific site (YouTube, Flipkart, Gmail, etc.) but you are on a different page, use navigate to go there FIRST before attempting any actions.
+16. MEDIA CONTROLS (YouTube play/pause/mute/volume): After clicking a media control ONCE, immediately return done — do NOT click it again. The button label flips (Pause↔Play) AFTER the action — that confirms success.
+17. ONE-SHOT GOALS: If the goal is a single simple action (click a button, fill a field, toggle something), return done IMMEDIATELY after doing it once. Do NOT re-examine the page or repeat.
+18. COUNT ACTIONS, NOT ATTEMPTS. If you have already performed the specific action the user asked, return done. Do NOT take more actions "to verify".
+19. NEVER attempt the same (action, index) combination more than twice. On the third attempt, return failed with a clear explanation.
+20. BE DECISIVE. This is a voice assistant — the user cannot type replies. Do your best with what you have. Never ask questions, never say "I need more info". Either do it or return failed with a short reason.
 `.trim();
 
 // ─── 6. GPT-4o call ───────────────────────────────────────────────────────────
