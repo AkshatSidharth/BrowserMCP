@@ -243,7 +243,13 @@ Rules:
    - Step 2: press_on the SAME index N with key "Enter" — this fires Enter directly on the input, bypassing any dropdown that may have stolen focus.
    - NEVER use plain press{key:Enter} after fill — focus may have shifted to a suggestion dropdown.
    - If press_on also fails, use click_xy on the search submit button coordinates.
-10. On e-commerce (Flipkart/Amazon):
+10. PRICE FILTERS — CRITICAL: NEVER drag the price slider. It is unreliable. Instead:
+    a) If there are Min/Max price SELECT DROPDOWNS on the page → use the "select" action on the max-price dropdown to pick the closest value (e.g. select "₹10,000" or "10000").
+    b) If the site is Flipkart and you need a price range: use navigate to add price params to the current URL.
+       Flipkart price URL format: append &p[]=facets.price_range.from%3DMin&p[]=facets.price_range.to%3DVALUE
+       Example for AC under ₹10000: navigate to https://www.flipkart.com/search?q=AC&p[]=facets.price_range.from%3DMin&p[]=facets.price_range.to%3D10000
+    c) For Amazon: append &rh=p_36%3A-VALUE00 (e.g. under ₹10000 = &rh=p_36%3A-1000000)
+    ALWAYS prefer URL navigation or dropdown select over slider dragging for price filters.
     - Search results: click the product title to open it. If click does nothing, try click_xy at the product's @(cx,cy) coordinates.
     - Product page: click "Add to Cart" or "Buy Now".
     - Cart: click "Place Order" or "Checkout".
