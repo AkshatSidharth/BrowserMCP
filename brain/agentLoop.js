@@ -268,12 +268,7 @@ async function getNextStep(goal, domText, base64, history) {
     ? `\nSteps done:\n${history.map((h, i) => `${i+1}. ${h}`).join('\n')}`
     : '\nNo steps yet.';
 
-  // Include recent voice commands so agent can resolve "my number", "it", etc.
-  const contextNote = recentContext
-    ? `\nRecent user commands (use to resolve "my number", "my email", "it", etc.):\n${recentContext}`
-    : '';
-
-  const goalText = `GOAL: ${goal}${contextNote}${historyText}\n\nCurrent page:\n${domText}\n\nNext single action?`;
+  const goalText = `GOAL: ${goal}${historyText}\n\nCurrent page:\n${domText}\n\nNext single action?`;
 
   const userContent = base64
     ? [
@@ -545,7 +540,12 @@ async function runAgentLoop(page, goal, onStep, recentContext = '') {
     logger.debug(`Step ${stepCount} — ${ctx.url} — ${ctx.elements.length} elements`);
 
     // ── Plan ─────────────────────────────────────────────────────────────────
-    const step = await getNextStep(goal, domText, base64, history);
+    // Append recent voice context to goal on first step only (so agent knows
+    // "my number", "my email", etc. even if stated in a prior command)
+    const goalWithContext = (stepCount === 1 && recentContext)
+      ? `${goal}\n\nContext from recent voice commands:\n${recentContext}`
+      : goal;
+    const step = await getNextStep(goalWithContext, domText, base64, history);
     logger.info(`Step ${stepCount}: ${JSON.stringify(step)}`);
 
     if (step.action === 'done') {
