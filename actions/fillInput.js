@@ -31,6 +31,8 @@ async function fillInput(_page, params) {
         if (parent) labelText = parent.innerText.replace(el.value || '', '').trim().slice(0, 80);
       }
       const rect = el.getBoundingClientRect();
+      // Detect if input is inside a header/nav — these are search bars, not form fields
+      const inNav = !!el.closest('header, nav, [class*="header"], [class*="Header"], [class*="navbar"], [class*="NavBar"], [class*="search-bar"], [class*="SearchBar"], [role="banner"]');
       return {
         index:       i,
         type:        el.type        || 'text',
@@ -40,6 +42,7 @@ async function fillInput(_page, params) {
         ariaLabel:   el.getAttribute('aria-label') || '',
         autocomplete: el.getAttribute('autocomplete') || '',
         labelText,
+        inNav,
         visible: rect.width > 0 && rect.height > 0,
       };
     })
@@ -57,11 +60,13 @@ async function fillInput(_page, params) {
   function score(inp) {
     const hay = [inp.type, inp.name, inp.id, inp.placeholder, inp.ariaLabel, inp.autocomplete, inp.labelText]
       .join(' ').toLowerCase();
-    // Bonus for password type when user asks for password
     let s = keywords.reduce((acc, kw) => acc + (hay.includes(kw) ? 2 : 0), 0);
     if (fieldLower.includes('password') && inp.type === 'password') s += 5;
     if ((fieldLower.includes('phone') || fieldLower.includes('mobile') || fieldLower.includes('number')) && inp.type === 'tel') s += 5;
     if (fieldLower.includes('email') && inp.type === 'email') s += 5;
+    // Heavily penalise navbar/header inputs (search bars, site-wide search)
+    // so they never win over login/form fields on the same page
+    if (inp.inNav) s -= 20;
     return s;
   }
 
