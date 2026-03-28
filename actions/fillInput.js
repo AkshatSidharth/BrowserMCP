@@ -75,11 +75,43 @@ async function fillInput(_page, params) {
 
   if (!handle) return { success: false, message: `Could not get element handle for field "${field}".` };
 
+  // ── Dismiss any overlay that might block the click ───────────────────────
+  try {
+    await page.keyboard.press('Escape');
+    await page.waitForTimeout(200);
+  } catch { /* best-effort */ }
+
   // ── Click to focus, triple-click to clear, then type char-by-char ─────────
   await handle.scrollIntoViewIfNeeded();
-  await handle.click({ clickCount: 3 }); // triple-click selects all existing text
-  await page.waitForTimeout(150);
-  await page.keyboard.type(String(value), { delay: 40 }); // 40ms between keystrokes — mimics human typing
+
+  try {
+    await handle.click({ clickCount: 3, timeout: 5000 });
+    await page.waitForTimeout(150);
+    await page.keyboard.type(String(value), { delay: 40 });
+  } catch (clickErr) {
+    // Overlay is blocking — use JS to set value directly then dispatch events
+    logger.warn(`fillInput click blocked (${clickErr.message.slice(0,80)}) — using JS fallback`);
+    await page.evaluate(({ idx, val }) => {
+      const els = document.querySelectorAll(
+        'input:not([type="hidden"]):not([type="submit"]):not([type="button"]):not([type="checkbox"]):not([type="radio"]), textarea'
+      );
+      const el = els[idx];
+      if (!el) return;
+      // Native value setter trick for React controlled inputs
+      const nativeInputValueSetter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value')?.set
+        || Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value')?.set;
+      if (nativeInputValueSetter) {
+        nativeInputValueSetter.call(el, val);
+        el.dispatchEvent(new Event('input',  { bubbles: true }));
+        el.dispatchEvent(new Event('change', { bubbles: true }));
+      } else {
+        el.value = val;
+        el.dispatchEvent(new Event('input',  { bubbles: true }));
+        el.dispatchEvent(new Event('change', { bubbles: true }));
+      }
+      el.focus();
+    }, { idx: best.index, val: String(value) });
+  }
 
   logger.info(`Typed "${value}" into field "${field}"`);
   return { success: true, message: `Entered "${value}" in the ${field} field.` };

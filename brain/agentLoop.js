@@ -625,7 +625,36 @@ async function runAgentLoop(page, goal, onStep, recentContext = '') {
       }
 
     } catch (err) {
-      const errMsg = `${step.description || step.action} → FAILED: ${err.message}`;
+      // ── Auto-dismiss overlay when click is intercepted ────────────────────
+      // "intercepts pointer events" = a modal/banner/popup is covering the element.
+      // Try: Escape → click common close buttons → then let agent retry normally.
+      if (/intercepts pointer events/i.test(err.message)) {
+        logger.info('Overlay detected — attempting auto-dismiss');
+        try {
+          await activePage.keyboard.press('Escape');
+          await activePage.waitForTimeout(400);
+          // Try clicking common dismiss buttons
+          const dismissSelectors = [
+            'button:has-text("Accept")', 'button:has-text("Close")',
+            'button:has-text("Got it")', 'button:has-text("OK")',
+            'button:has-text("Dismiss")', '[aria-label="Close"]',
+            '.modal-close', '.popup-close', '[data-dismiss="modal"]',
+          ];
+          for (const sel of dismissSelectors) {
+            const btn = activePage.locator(sel).first();
+            if (await btn.isVisible({ timeout: 500 }).catch(() => false)) {
+              await btn.click({ timeout: 2000 }).catch(() => {});
+              break;
+            }
+          }
+          await activePage.waitForTimeout(300);
+          if (onStep) onStep(`⚡ Dismissed overlay, retrying...`);
+        } catch { /* best-effort */ }
+        // Don't push to history — let the agent retry the same step cleanly
+        continue;
+      }
+
+      const errMsg = `${step.description || step.action} → FAILED: ${err.message.slice(0, 150)}`;
       history.push(errMsg);
       logger.warn(`Step error: ${err.message}`);
       if (onStep) onStep(`⚠ ${errMsg}`);
