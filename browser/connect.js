@@ -134,6 +134,10 @@ async function findOpenTab(urlPattern) {
 async function switchToTab(page) {
   _page = page;
   await page.bringToFront().catch(() => {});
+  if (process.platform === 'darwin') {
+    const { exec } = require('child_process');
+    exec(`osascript -e 'tell application "Google Chrome" to activate'`).catch?.(() => {});
+  }
   logger.info(`Switched to tab: ${page.url()}`);
   return page;
 }
@@ -145,6 +149,12 @@ async function navigateTo(url) {
   const page = await getActivePage();
   logger.info(`Navigating to ${url}`);
   await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 30_000 });
+  // Bring Chrome to front on macOS so the user can see the result
+  await page.bringToFront().catch(() => {});
+  if (process.platform === 'darwin') {
+    const { exec } = require('child_process');
+    exec(`osascript -e 'tell application "Google Chrome" to activate'`).catch?.(() => {});
+  }
   return page;
 }
 
