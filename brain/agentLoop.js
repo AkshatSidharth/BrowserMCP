@@ -243,12 +243,25 @@ Rules:
    - Step 2: press_on the SAME index N with key "Enter" — this fires Enter directly on the input, bypassing any dropdown that may have stolen focus.
    - NEVER use plain press{key:Enter} after fill — focus may have shifted to a suggestion dropdown.
    - If press_on also fails, use click_xy on the search submit button coordinates.
-10. PRICE SLIDERS and RANGE INPUTS — never use drag_xy on sliders, it breaks on Retina displays and resizing. Instead use the "evaluate" action to set the value directly via JavaScript:
-    For MAX price slider (set to e.g. 10000):
-    {"action":"evaluate","script":"(function(){const sliders=document.querySelectorAll('input[type=\\"range\\"]');const s=sliders[sliders.length-1];if(!s)return;const set=Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set;set.call(s,'10000');s.dispatchEvent(new Event('input',{bubbles:true}));s.dispatchEvent(new Event('change',{bubbles:true}));})()","description":"Set max price slider to 10000"}
-    For MIN price slider (first range input): use sliders[0] instead of sliders[sliders.length-1].
-    If there are also price SELECT DROPDOWNS (Min / ₹50000+), prefer using "select" action on those — they are even more reliable than JS slider setting.
-    ALWAYS use evaluate or select for price filters. NEVER drag_xy on sliders.
+10. PRICE FILTERS — always INSPECT FIRST, then act. Use evaluate to detect what type of price filter exists:
+    {"action":"evaluate","script":"(function(){const r=document.querySelectorAll('input[type=\"range\"]');const sel=Array.from(document.querySelectorAll('select')).filter(x=>x.textContent.includes('\\u20b9')||/price|amount/i.test(x.name+x.id+x.className));const minBox=document.querySelector('input[placeholder*=\"Min\"],input[placeholder*=\"min\"],input[aria-label*=\"Min\"],input[aria-label*=\"min\"]');const maxBox=document.querySelector('input[placeholder*=\"Max\"],input[placeholder*=\"max\"],input[aria-label*=\"Max\"],input[aria-label*=\"max\"]');return{rangeInputs:r.length,priceSelects:sel.length,hasPriceTextboxes:!!(minBox||maxBox),ranges:Array.from(r).map(x=>({min:x.min,max:x.max,val:x.value}))};})()","description":"Detect price filter type on page"}
+
+    Based on the result, choose the RIGHT method:
+
+    A) rangeInputs > 0 → Native HTML range slider. Set value with JS (NEVER drag_xy):
+       MAX price (last slider): {"action":"evaluate","script":"(function(){const s=document.querySelectorAll('input[type=\"range\"]');const el=s[s.length-1];if(!el)return 'not found';const nv=Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set;nv.call(el,'VALUE_HERE');el.dispatchEvent(new Event('input',{bubbles:true}));el.dispatchEvent(new Event('change',{bubbles:true}));return 'set to '+el.value;})()","description":"Set max price slider to VALUE_HERE"}
+       MIN price (first slider): same but use s[0] instead of s[s.length-1].
+
+    B) priceSelects > 0 → Price dropdown. Use the "select" action with the closest available option value.
+
+    C) hasPriceTextboxes → Price text input boxes (Min ₹ / Max ₹ fields). Use fill action to type the price into the correct box (by index or click_xy), then press Enter or click "Go" / "Apply".
+
+    D) None of the above → Custom div/React slider (e.g. Flipkart). Steps:
+       1. Use evaluate to get the slider track's bounding rect and the data-min/data-max or aria-valuemin/aria-valuemax:
+          {"action":"evaluate","script":"(function(){const track=document.querySelector('[class*=\"_range\"],._range,[role=\"slider\"],[class*=\"slider\"],[class*=\"Slider\"]');if(!track)return null;const r=track.getBoundingClientRect();const mn=track.getAttribute('aria-valuemin')||track.dataset.min||'0';const mx=track.getAttribute('aria-valuemax')||track.dataset.max||'100000';return{x:r.left,y:r.top+r.height/2,w:r.width,min:Number(mn),max:Number(mx)};})()","description":"Get custom slider track bounds"}
+       2. Calculate click X position: x = track.x + (targetPrice - track.min) / (track.max - track.min) * track.w
+       3. Click at that position: {"action":"click_xy","x":CALCULATED_X,"y":TRACK_Y,"description":"Click slider track at target price position"}
+       4. If there is an "Apply" button after moving the slider, click it.
     - Search results: click the product title to open it. If click does nothing, try click_xy at the product's @(cx,cy) coordinates.
     - Product page: click "Add to Cart" or "Buy Now".
     - Cart: click "Place Order" or "Checkout".
