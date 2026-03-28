@@ -205,6 +205,155 @@ async function executeDesktopStep(step) {
       break;
     }
 
+    // ── DesktopCommanderMCP-style: command execution with output ────────────────
+    case 'execute_command': {
+      // Runs a shell command and RETURNS stdout so GPT-4o can use the result
+      // in subsequent steps. Better than 'shell' which silently discards output.
+      const { stdout, stderr } = await execAsync(step.command, {
+        timeout: step.timeout_ms || 30000,
+        shell: '/bin/bash',
+        env: { ...process.env, TERM: 'dumb' },
+      }).catch(e => ({ stdout: e.stdout || '', stderr: e.message }));
+      const out = (stdout + (stderr ? `\nSTDERR: ${stderr}` : '')).trim();
+      return out || '(no output)';
+    }
+
+    // ── DesktopCommanderMCP-style: file operations ──────────────────────────────
+    case 'read_file': {
+      const rawPath = step.path.replace(/^~/, os.homedir());
+      const content = fs.readFileSync(rawPath, 'utf8');
+      const lines   = content.split('\n');
+      const start   = step.offset || 0;
+      const len     = step.length || 300;
+      const slice   = lines.slice(start, start + len).join('\n');
+      return `File: ${rawPath} (lines ${start+1}–${start+len} of ${lines.length})\n${slice}`;
+    }
+
+    case 'write_file': {
+      const rawPath = step.path.replace(/^~/, os.homedir());
+      fs.mkdirSync(path.dirname(rawPath), { recursive: true });
+      fs.writeFileSync(rawPath, step.content, 'utf8');
+      return `Written ${step.content.length} chars to ${rawPath}`;
+    }
+
+    case 'append_file': {
+      const rawPath = step.path.replace(/^~/, os.homedir());
+      fs.appendFileSync(rawPath, step.content, 'utf8');
+      return `Appended to ${rawPath}`;
+    }
+
+    case 'list_directory': {
+      const rawPath = (step.path || '~').replace(/^~/, os.homedir());
+      const entries = fs.readdirSync(rawPath, { withFileTypes: true });
+      return entries
+        .map(e => `${e.isDirectory() ? '[DIR] ' : '[FILE]'} ${e.name}`)
+        .join('\n');
+    }
+
+    case 'search_files': {
+      // grep-based search — returns matching filenames or lines
+      const dir = (step.path || '~').replace(/^~/, os.homedir());
+      const pat = step.pattern.replace(/"/g, '\\"');
+      const flags = ['-r', step.case_insensitive ? '-i' : '', step.show_lines ? '-n' : '-l']
+        .filter(Boolean).join(' ');
+      const { stdout } = await execAsync(`grep ${flags} "${pat}" "${dir}" 2>/dev/null | head -50`, {
+        timeout: 10000, shell: '/bin/bash',
+      }).catch(e => ({ stdout: e.stdout || '' }));
+      return stdout.trim() || 'No matches found.';
+    }
+
+    // ── DesktopCommanderMCP-style: process management ───────────────────────────
+    case 'list_processes': {
+      const { stdout } = await execAsync(
+        `ps aux | awk 'NR==1 || /%cpu > 0.1 || /%mem > 0.1' | head -40`,
+        { shell: '/bin/bash' }
+      ).catch(e => ({ stdout: e.message }));
+      return stdout.trim();
+    }
+
+    case 'kill_process': {
+      if (step.pid) {
+        await execAsync(`kill ${step.pid}`).catch(() => execAsync(`kill -9 ${step.pid}`));
+        return `Killed PID ${step.pid}`;
+      } else if (step.name) {
+        const safe = step.name.replace(/"/g, '\\"');
+        await execAsync(`pkill -f "${safe}"`).catch(() => {});
+        return `Killed process matching "${step.name}"`;
+      }
+      return 'Provide pid or name.';
+    }
+
+    // ── macos-control-mcp-style: accessibility tree ──────────────────────────────
+    case 'get_ui_elements': {
+      // Read the accessibility tree of any running app by name.
+      // Returns roles, names, and descriptions of UI elements — much more
+      // reliable than coordinate clicking because names don't shift on resize.
+      const appName = step.app || '';
+      const script = `
+tell application "System Events"
+  tell process "${appName.replace(/"/g, '\\"')}"
+    set output to ""
+    repeat with w in windows
+      try
+        set output to output & "=== Window: " & name of w & " ===" & return
+        set allEls to entire contents of w
+        repeat with e in allEls
+          try
+            set r to role of e
+            set n to name of e
+            if n is not "" then
+              set output to output & r & ": " & n & return
+            end if
+          end try
+        end repeat
+      end try
+    end repeat
+    return output
+  end tell
+end tell`.trim();
+      const tmpFile = path.join(os.tmpdir(), `ui-${Date.now()}.scpt`);
+      fs.writeFileSync(tmpFile, script);
+      const { stdout } = await execAsync(`osascript "${tmpFile}"`).catch(e => ({ stdout: e.message }));
+      fs.unlink(tmpFile, () => {});
+      return stdout.trim() || '(no UI elements found)';
+    }
+
+    case 'click_by_name': {
+      // Click a UI element by its accessible name — far more reliable than
+      // click_at coordinates which break on window moves and Retina scaling.
+      const appName  = step.app || '';
+      const elName   = step.name.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+      const script = `
+tell application "System Events"
+  tell process "${appName.replace(/"/g, '\\"')}"
+    set found to false
+    repeat with w in windows
+      try
+        set allEls to entire contents of w
+        repeat with e in allEls
+          try
+            if name of e contains "${elName}" then
+              click e
+              set found to true
+              exit repeat
+            end if
+          end try
+        end repeat
+        if found then exit repeat
+      end try
+    end repeat
+    if not found then
+      error "Element not found: ${elName}"
+    end if
+  end tell
+end tell`.trim();
+      const tmpFile = path.join(os.tmpdir(), `click-${Date.now()}.scpt`);
+      fs.writeFileSync(tmpFile, script);
+      const { stdout } = await execAsync(`osascript "${tmpFile}"`).catch(e => ({ stdout: e.message }));
+      fs.unlink(tmpFile, () => {});
+      return stdout.trim() || `Clicked "${step.name}"`;
+    }
+
     case 'open_app': {
       await execAsync(`open -a "${step.app}"`).catch(async () => {
         await execAsync(`open "${step.app}"`);
@@ -252,58 +401,88 @@ Your job: look at what is visible on screen and return exact JSON steps to compl
 ${retinaNote}
 
 Available step types:
-- click_at: click at a pixel position on screen — PREFERRED for anything visible on screen
+
+── UI / SCREEN ──────────────────────────────────────────────────────────
+- click_at: click at a pixel position on screen
   → {"type":"click_at", "x":350, "y":240, "description":"Click Wi-Fi in sidebar"}
 - double_click_at: double-click at position
   → {"type":"double_click_at", "x":200, "y":300, "description":"Open folder"}
 - right_click_at: right-click at position
   → {"type":"right_click_at", "x":200, "y":300, "description":"Right-click desktop"}
 - scroll_at: scroll at position
-  → {"type":"scroll_at", "x":500, "y":400, "direction":"down", "amount":3, "description":"Scroll down"}
+  → {"type":"scroll_at", "x":500, "y":400, "direction":"down", "amount":3, "description":"Scroll"}
 - type_text: type text at current cursor
   → {"type":"type_text", "text":"Hello", "description":"Type search query"}
-- key_combo: keyboard shortcut
-  → {"type":"key_combo", "keys":["command","space"], "description":"Open Spotlight"}
-- open_settings_panel: open a specific macOS System Settings panel directly (NO Accessibility needed)
-  → {"type":"open_settings_panel", "panel":"wifi", "description":"Open Wi-Fi settings"}
-  Available panels: wifi, bluetooth, network, display, sound, battery, notifications, privacy,
-  appearance, wallpaper, screensaver, accessibility, focus, storage, general, airdrop,
-  users, keyboard, mouse, trackpad, siri, vpn
-- set_volume: set or adjust system volume directly (NO Accessibility needed — ALWAYS use this for volume)
-  → {"type":"set_volume", "delta":-10, "description":"Decrease volume by 10"}  (delta: positive=up, negative=down)
-  → {"type":"set_volume", "value":50, "description":"Set volume to 50%"}
-- set_brightness: adjust screen brightness (NO Accessibility if brightness CLI installed)
-  → {"type":"set_brightness", "delta":-0.1, "description":"Decrease brightness by 10%"}  (delta: positive=up, negative=down, range 0.0–1.0)
-  → {"type":"set_brightness", "value":0.5, "description":"Set brightness to 50%"}
-- set_keyboard_brightness: adjust keyboard backlight (NO Accessibility if kbbrightness CLI installed)
-  → {"type":"set_keyboard_brightness", "delta":-20, "description":"Decrease keyboard brightness"}  (delta: positive=up, negative=down, range ~0–100)
-- open_app: open a Mac application by name
-  → {"type":"open_app", "app":"System Settings", "wait_ms":2000, "description":"Open System Settings"}
-- focus_app: bring an app to front
+- key_combo: keyboard shortcut (command/shift/option/control + key)
+  → {"type":"key_combo", "keys":["command","space"], "description":"Spotlight"}
+- get_ui_elements: read accessibility tree of any running app (use BEFORE click_by_name)
+  → {"type":"get_ui_elements", "app":"Notes", "description":"List Notes UI elements"}
+- click_by_name: click a UI element by its accessible name — more reliable than coordinates
+  → {"type":"click_by_name", "app":"Notes", "name":"New Note", "description":"Click New Note"}
+
+── APPS / SYSTEM ────────────────────────────────────────────────────────
+- open_app: open or focus a Mac app
+  → {"type":"open_app", "app":"System Settings", "wait_ms":2000, "description":"Open Settings"}
+- focus_app: bring an app to front without reopening
   → {"type":"focus_app", "app":"Finder", "description":"Focus Finder"}
 - open_url: open a URL in default browser
-  → {"type":"open_url", "url":"https://mail.google.com/mail/u/0/#compose", "description":"Open Gmail compose"}
-- applescript_file: run multi-line AppleScript for complex app control
+  → {"type":"open_url", "url":"https://mail.google.com/mail/u/0/#compose", "description":"Gmail compose"}
+- open_settings_panel: open a specific macOS System Settings panel (NO Accessibility needed)
+  → {"type":"open_settings_panel", "panel":"wifi", "description":"Open Wi-Fi settings"}
+  Panels: wifi, bluetooth, network, display, sound, battery, notifications, privacy,
+          appearance, wallpaper, screensaver, accessibility, focus, storage, general,
+          airdrop, users, keyboard, mouse, trackpad, siri, vpn
+- set_volume: set/adjust system volume (ALWAYS use this, never click)
+  → {"type":"set_volume", "delta":-10, "description":"Volume down 10"}
+  → {"type":"set_volume", "value":50, "description":"Volume 50%"}
+- set_brightness: screen brightness (delta range 0.0–1.0)
+  → {"type":"set_brightness", "delta":0.15, "description":"Brighter"}
+- set_keyboard_brightness: keyboard backlight (delta range ~0–100)
+  → {"type":"set_keyboard_brightness", "delta":20, "description":"Keyboard backlight up"}
+
+── TERMINAL / SHELL ─────────────────────────────────────────────────────
+- execute_command: run any shell command — OUTPUT IS RETURNED and shown to you in next step
+  → {"type":"execute_command", "command":"ls ~/Desktop", "timeout_ms":15000, "description":"List Desktop"}
+  Use this for: running scripts, checking file contents via cat/grep, git commands, system info
+- shell: like execute_command but output is NOT returned (use for fire-and-forget)
+  → {"type":"shell", "command":"open -a Notes", "description":"Open Notes via shell"}
+- applescript_file: multi-line AppleScript for complex app automation
   → {"type":"applescript_file", "code":"tell application \\"Mail\\"\\n...\\nend tell", "description":"..."}
-- shell: run a shell command
-  → {"type":"shell", "command":"open -a 'System Settings'", "description":"..."}
-- wait: pause
+- list_processes: get list of running processes with CPU/mem (output returned)
+  → {"type":"list_processes", "description":"Check running apps"}
+- kill_process: kill a process by PID or name
+  → {"type":"kill_process", "name":"python3", "description":"Kill python process"}
+  → {"type":"kill_process", "pid":1234, "description":"Kill PID 1234"}
+
+── FILE SYSTEM ──────────────────────────────────────────────────────────
+- read_file: read a file (output returned so you can use content in next steps)
+  → {"type":"read_file", "path":"~/Desktop/notes.txt", "offset":0, "length":100, "description":"Read notes"}
+- write_file: write/overwrite a file
+  → {"type":"write_file", "path":"~/Desktop/output.txt", "content":"Hello world", "description":"Write file"}
+- append_file: append text to end of a file
+  → {"type":"append_file", "path":"~/Desktop/log.txt", "content":"new line", "description":"Append log"}
+- list_directory: list files and folders at a path (output returned)
+  → {"type":"list_directory", "path":"~/Desktop", "description":"List Desktop files"}
+- search_files: grep search across files (output returned)
+  → {"type":"search_files", "path":"~/Documents", "pattern":"invoice", "case_insensitive":true, "description":"Find invoice files"}
+
+── CONTROL ──────────────────────────────────────────────────────────────
+- wait: pause between steps
   → {"type":"wait", "ms":1500, "description":"Wait for app to load"}
 - done: goal achieved
-  → {"type":"done", "message":"Opened System Settings Wi-Fi panel"}
-- failed: cannot complete
-  → {"type":"failed", "message":"reason"}
+  → {"type":"done", "message":"Done — created the file at ~/Desktop/notes.txt"}
+- failed: cannot complete, explain why
+  → {"type":"failed", "message":"Reason"}
 
 Strategy:
-1. For ANY System Settings panel → use open_settings_panel. Never click_at for settings navigation.
-2. For VOLUME changes ("increase/decrease volume", "mute", "volume up/down") → ALWAYS use set_volume with delta (e.g. +10 or -10). Never use click_at for volume slider.
-3. For SCREEN BRIGHTNESS ("increase/decrease brightness", "brighter/dimmer screen") → use set_brightness with delta (e.g. +0.15 or -0.15).
-4. For KEYBOARD BACKLIGHT ("keyboard brightness", "keyboard backlight") → use set_keyboard_brightness with delta (e.g. +20 or -20).
-5. For other apps: look at the screenshot. If you can see the target element → use click_at with exact coordinates.
-6. If the target app is not open yet → use open_app first, then wait, then click_at.
-7. For typing: click_at on the input field first, then type_text.
-8. For email/compose: prefer open_url to Gmail compose page — it's simpler than Mail.app.
-9. Return ONE logical sequence of steps.
+1. For ANY System Settings panel → use open_settings_panel directly.
+2. For VOLUME → set_volume. For BRIGHTNESS → set_brightness. Never click for these.
+3. To interact with a native app by name (Notes, Mail, Finder): use get_ui_elements first to see what's available, then click_by_name. Fall back to click_at if name not found.
+4. For tasks that need command output (check if file exists, read contents, run a script) → use execute_command — the output will be shown to you in the next planning step.
+5. For file tasks (read file, write file, list folder) → use read_file/write_file/list_directory directly.
+6. For email/compose: prefer open_url to Gmail compose page (https://mail.google.com/mail/u/0/#compose).
+7. click_at coordinates: look at the screenshot carefully. On Retina displays use LOGICAL coordinates.
+8. Return ONE logical sequence of steps ending with done or failed.
 
 Output ONLY valid JSON: {"steps": [...]}
 `.trim();
@@ -377,9 +556,14 @@ async function runDesktopAgent(goal, onStep) {
       try {
         const result = await executeDesktopStep(step);
         const desc   = step.description || step.type;
-        history.push(desc);
-        if (onStep) onStep(`⚡ ${desc}`);
-        logger.info(`Desktop step OK: ${desc}${result ? ` → ${result}` : ''}`);
+        // Include command output in history so GPT-4o can use it in next planning step.
+        // This is the DesktopCommanderMCP pattern: feed stdout/file-contents back.
+        const histEntry = result
+          ? `${desc}\n   → OUTPUT: ${String(result).slice(0, 800)}`
+          : desc;
+        history.push(histEntry);
+        if (onStep) onStep(`⚡ ${desc}${result ? ` → ${String(result).slice(0, 120)}` : ''}`);
+        logger.info(`Desktop step OK: ${desc}${result ? ` → ${String(result).slice(0, 200)}` : ''}`);
       } catch (err) {
         logger.warn(`Desktop step failed: ${err.message}`);
         let hint = err.message;
