@@ -275,12 +275,25 @@ Rules:
 18. COUNT ACTIONS, NOT ATTEMPTS. If you have already performed the specific action the user asked, return done. Do NOT take more actions "to verify".
 19. NEVER attempt the same (action, index) combination more than twice. On the third attempt, return failed with a clear explanation.
 20. BE DECISIVE. This is a voice assistant — the user cannot type replies. Do your best with what you have. Never ask questions, never say "I need more info". Either do it or return failed with a short reason.
-21. KAPTURE ADMIN / ADJETTER FLOW — when navigating adjetter.com/admin:
-    a) If on login page (adjetter.com/admin/ or login page showing "Sign in with Google") → click the "Sign in with Google" button. Then wait for navigation to complete.
-    b) If on home page (adjetter.com/admin/home.html) showing "LOGIN TO PARTNER EMPLOYEE" button → click it.
-    c) If on login-to-partner-employee page AND goal mentions "Select Admin Server" or "In server" → click the "Select Admin Server" dropdown (top-right header), then click the "In server" option.
-    d) GOOGLE AUTH POPUP: If a Google account picker popup appears (accounts.google.com), click the correct account. Do NOT return done — wait for the popup to redirect back.
-    e) After clicking "Select Admin Server" and choosing "In server", return done immediately — do not take further steps.
+21. KAPTURE ADMIN / ADJETTER PARTNER LOGIN FLOW:
+    a) LOGIN PAGE (adjetter.com/admin/ showing "Sign in with Google") → click the button, wait for Google auth.
+    b) HOME PAGE (adjetter.com/admin/home.html with 3 big buttons) → click "LOGIN TO PARTNER EMPLOYEE".
+    c) PARTNER EMPLOYEE PAGE (login-to-partner-employee.html or allow-partner-employee-login.html):
+       - If goal mentions a client name: scroll down to the "SELECT DOMAIN" section.
+         The Domain Name field is a SEARCHABLE REACT SELECT dropdown (not a native <select>). To use it:
+         1. Click on the Domain Name input/dropdown control to open it.
+         2. Type the client name (e.g. "Kotak", "Indus") — this filters the list.
+         3. Wait briefly for options to appear, then click the best matching option from the list.
+         4. If a Remarks field is visible and empty, fill it with a brief reason (e.g. "Partner login access").
+         5. Click the LOGIN button for that domain.
+       - If goal says "Select Admin Server" / "In server": click the "Select Admin Server" dropdown in the top-right header and choose the "In server" option.
+    d) HISTORY TABLE LOGIN: If the goal is to re-login to a recently used domain (shown in history table at top), click the LOGIN button in that row directly.
+    e) GOOGLE AUTH POPUP: If a Google account picker appears (accounts.google.com), click the correct account — do NOT return done.
+    f) SEARCHABLE REACT SELECT pattern (applies to any React Select dropdown on any site):
+       - These look like styled boxes with a placeholder — NOT native <select>.
+       - Click the control area, then type to search, then click the option.
+       - If click does nothing, try click_xy at the dropdown's coordinates.
+       - Never use the "select" action on React Select — it only works on native <select> elements.
 `.trim();
 
 // ─── 6. GPT-4o call ───────────────────────────────────────────────────────────
