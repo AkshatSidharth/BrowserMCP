@@ -287,9 +287,11 @@ Rules:
          4. If a Remarks field is visible and empty, fill it with a brief reason (e.g. "Partner login access").
          5. Click the LOGIN button for that domain.
        - If goal says "Select Admin Server" / "In server": click the "Select Admin Server" dropdown in the top-right header and choose the "In server" option.
-    d) HISTORY TABLE LOGIN: If the goal is to re-login to a recently used domain (shown in history table at top), click the LOGIN button in that row directly.
-    e) GOOGLE AUTH POPUP: If a Google account picker appears (accounts.google.com), click the correct account — do NOT return done.
-    f) SEARCHABLE REACT SELECT pattern (applies to any React Select dropdown on any site):
+    d) HISTORY TABLE LOGIN: If the goal is to re-login to a recently used domain (shown in history table at top), click the LOGIN button in that row directly — do NOT re-do the domain search.
+    e) REMARKS FIELD: Before clicking LOGIN, check if a Remarks text area/input is visible and empty. If so, fill it with something like "Logging in for support" (minimum 5 words as required). Then click LOGIN.
+    f) AFTER LOGIN — KAPTURE CRM WORKSPACE: After clicking LOGIN, the page will navigate to the client's Kapture CRM workspace at a URL like https://{clientname}.int.kapturecrm.com/app/workspace/... — once you land on any *.kapturecrm.com/app/workspace URL, the login is complete. Return done("Logged in to {client} Kapture CRM workspace").
+    g) GOOGLE AUTH POPUP: If a Google account picker appears (accounts.google.com), click the correct account — do NOT return done.
+    h) SEARCHABLE REACT SELECT pattern (applies to any React Select dropdown on any site):
        - These look like styled boxes with a placeholder — NOT native <select>.
        - Click the control area, then type to search, then click the option.
        - If click does nothing, try click_xy at the dropdown's coordinates.
