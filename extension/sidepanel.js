@@ -886,6 +886,7 @@ const textInput   = document.getElementById('textInput');
 const sendBtn     = document.getElementById('sendBtn');
 const apiWarning  = document.getElementById('apiWarning');
 const settingsBtn = document.getElementById('settingsBtn');
+const emptyState  = document.getElementById('emptyState');
 
 function setStatus(state, text) {
   statusDot.className = `status-dot ${state}`;
@@ -893,20 +894,29 @@ function setStatus(state, text) {
 }
 
 function addStep(text, type = 'active') {
-  // Remove 'active' class from previous last step
+  if (emptyState) emptyState.style.display = 'none';
   const prev = stepsArea.querySelector('.step-item.active');
   if (prev) prev.classList.replace('active', 'done');
 
   const el = document.createElement('div');
   el.className = `step-item ${type}`;
-  const icon = type === 'success' ? '✓' : type === 'error' ? '✗' : '→';
-  el.innerHTML = `<span class="step-icon">${icon}</span>${text}`;
+  const icons = { success: '✓', error: '✗', active: '›', done: '·' };
+  const icon = icons[type] || '›';
+  el.innerHTML = `<div class="step-dot">${icon}</div><div class="step-text">${text}</div>`;
   stepsArea.appendChild(el);
   stepsArea.scrollTop = stepsArea.scrollHeight;
   return el;
 }
 
-function clearSteps() { stepsArea.innerHTML = ''; }
+function clearSteps() {
+  stepsArea.innerHTML = '';
+  if (emptyState) {
+    const clone = emptyState.cloneNode(true);
+    clone.id = 'emptyState';
+    clone.style.display = '';
+    stepsArea.appendChild(clone);
+  }
+}
 
 let _lastStepEl = null;
 
@@ -942,11 +952,12 @@ async function submitCommand(text) {
   _interruptCmd = null;
   clearSteps();
   transcriptEl.textContent = text;
-  transcriptEl.className = 'transcript-text';
+  transcriptEl.className = 'transcript-text has-text';
   setStatus('running', 'Running…');
   // Keep mic ENABLED so user can interrupt mid-loop
   sendBtn.textContent = '■';
   sendBtn.title = 'Stop';
+  sendBtn.className = 'action-btn stop-btn';
   textInput.disabled = true;
 
   try {
@@ -971,6 +982,7 @@ async function submitCommand(text) {
     _interruptCmd = null;
     sendBtn.textContent = '↵';
     sendBtn.title = '';
+    sendBtn.className = 'action-btn send-btn';
     textInput.disabled = false;
   }
 }
@@ -1079,11 +1091,64 @@ textInput.addEventListener('keydown', e => {
   if (e.key === 'Enter') sendBtn.click();
 });
 
-// Settings + Refresh
+// Settings
 settingsBtn.addEventListener('click', () => chrome.runtime.openOptionsPage());
 document.getElementById('openOptionsLink')?.addEventListener('click', () => chrome.runtime.openOptionsPage());
-document.getElementById('refreshBtn').addEventListener('click', () => {
-  chrome.runtime.reload();
+
+// Refresh — re-injects content script, re-checks API key, resets state
+// Hold for 1.5s → full extension reload (nuclear option)
+let _refreshHoldTimer = null;
+const refreshBtn = document.getElementById('refreshBtn');
+
+async function softRefresh() {
+  refreshBtn.classList.add('spinning');
+  refreshBtn.disabled = true;
+  try {
+    // 1. Re-inject content script into current active tab
+    const tabId = await getActiveTabId();
+    if (tabId) {
+      await chrome.scripting.executeScript({ target: { tabId }, files: ['content.js'] }).catch(() => {});
+    }
+    // 2. Re-check API key + update status
+    await init();
+    // 3. Reset running state if stuck
+    if (_isRunning) {
+      _abortLoop = true;
+      _isRunning = false;
+      textInput.disabled = false;
+      sendBtn.textContent = '↵';
+      sendBtn.className = 'action-btn send-btn';
+    }
+    clearSteps();
+    addStep('Content script refreshed ✓', 'success');
+    speak('Refreshed.');
+  } finally {
+    setTimeout(() => {
+      refreshBtn.classList.remove('spinning');
+      refreshBtn.disabled = false;
+    }, 700);
+  }
+}
+
+refreshBtn.addEventListener('mousedown', () => {
+  _refreshHoldTimer = setTimeout(() => {
+    _refreshHoldTimer = null;
+    // Full extension reload
+    refreshBtn.classList.add('spinning');
+    setTimeout(() => chrome.runtime.reload(), 300);
+  }, 1500);
+});
+
+refreshBtn.addEventListener('mouseup', () => {
+  if (_refreshHoldTimer) {
+    clearTimeout(_refreshHoldTimer);
+    _refreshHoldTimer = null;
+    softRefresh();
+  }
+});
+
+refreshBtn.addEventListener('mouseleave', () => {
+  if (_refreshHoldTimer) { clearTimeout(_refreshHoldTimer); _refreshHoldTimer = null; }
 });
 
 // ── Init ──────────────────────────────────────────────────────────────────────
