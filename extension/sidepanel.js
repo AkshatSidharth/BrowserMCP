@@ -69,23 +69,37 @@ const INTENT_PROMPT = `
 You are a browser automation intent classifier. Parse the user's voice/text command.
 
 Return ONE of these JSON actions:
-- {"action":"click_element","params":{"target":"..."}}       ← click ONE named element on the page
-- {"action":"smart_act","params":{"command":"..."}}          ← multi-step browser task
-- {"action":"navigate","params":{"url":"https://..."}}       ← go to a URL
-- {"action":"scroll_act","params":{"direction":"down"}}      ← scroll (up/down/top/bottom)
-- {"action":"media_act","params":{"operation":"pause"}}      ← media control (pause/play/mute/unmute/toggle/volume_up/volume_down)
-- {"action":"fill_input","params":{"field":"...","value":""}}← fill a specific form field
+- {"action":"navigate","params":{"url":"https://..."}}        ← go to a website URL
+- {"action":"click_element","params":{"target":"..."}}        ← click ONE named element already on the page
+- {"action":"smart_act","params":{"command":"..."}}           ← multi-step task
+- {"action":"scroll_act","params":{"direction":"down"}}       ← scroll page
+- {"action":"media_act","params":{"operation":"pause"}}       ← media control
+- {"action":"fill_input","params":{"field":"...","value":""}} ← fill a form field
 
-Rules:
-1. scroll up/down/top/bottom → scroll_act
-2. play/pause/mute/volume → media_act
-3. "open X.com" → navigate with full URL
-4. "my number/email/password is X" → fill_input
-5. "click on X" / "open X" / "go to X tab" / "select X" (single element on page) → click_element with target=X
-7. "login to Kotak/Indus/Bigbasket/<any client>" → smart_act command:
-   "Kapture partner login for <CLIENT>: navigate https://adjetter.com/admin/home.html, sign in with Google if needed, click LOGIN TO PARTNER EMPLOYEE, select admin server https://in.kapturecrm.com, select domain <CLIENT> from searchable dropdown, select employee, fill Remarks (5+ words), click Submit"
-8. "open Kapture" / "Kapture admin" → smart_act navigate adjetter.com/admin/home.html
-9. Everything else that needs multiple steps → smart_act with the full command text
+NAVIGATE rules (highest priority — check these FIRST):
+1. "open X" / "go to X" / "open X website" / "launch X" where X is a consumer app or website → navigate to that URL.
+   Examples: "open BigBasket" → {"action":"navigate","params":{"url":"https://www.bigbasket.com"}}
+             "open Amazon" → https://www.amazon.in
+             "open Flipkart" → https://www.flipkart.com
+             "open Zomato" → https://www.zomato.com
+             "open Swiggy" → https://www.swiggy.com
+             "open YouTube" → https://www.youtube.com
+             "open Google" → https://www.google.com
+             "open Instagram" → https://www.instagram.com
+             "open Myntra" → https://www.myntra.com
+             "open Nykaa" → https://www.nykaa.com
+             "go back" / "go back to X" → use navigate with the URL of that page if known, else smart_act
+2. "open X.com" or any explicit domain → navigate to that URL
+3. scroll up/down/top/bottom → scroll_act
+4. play/pause/mute/volume → media_act
+5. "my number/email/password is X" → fill_input
+6. "click on X" / "select X" / "go to X tab" (element already visible on the current page) → click_element
+7. "login to <CLIENT>" (Kapture CRM partner login) → smart_act:
+   "Kapture partner login for <CLIENT>: navigate https://adjetter.com/admin/home.html, sign in with Google if needed, click LOGIN TO PARTNER EMPLOYEE, select admin server https://in.kapturecrm.com, select domain <CLIENT> from React Select dropdown (click control → type name → click option), select employee, fill Remarks with 5+ words, click Submit"
+8. "open Kapture" / "Kapture admin" → navigate to https://adjetter.com/admin/home.html
+9. Everything else → smart_act with the full command text
+
+KEY DISTINCTION: "open BigBasket" = go to bigbasket.com (navigate). "login to BigBasket" = Kapture CRM partner login (smart_act).
 
 Return ONLY valid JSON. No markdown.
 `.trim();
@@ -159,8 +173,11 @@ NAVIGATION + MENUS:
 19. Pagination: click "Next" or page number.
 20. Infinite scroll pages: scroll down 600px to load more items.
 
-REACT SELECT / CUSTOM DROPDOWNS:
-21. Click the control → type search text → click the matching option from the dropdown list.
+REACT SELECT / CUSTOM DROPDOWNS ([react-select] in element list):
+21. Step A: click the [react-select] control element to open it.
+    Step B: use fill on the SAME element (or type action) to type the search text.
+    Step C: wait 600ms then click the option that appears in the dropdown list.
+    NEVER use the "select" action on a [react-select]. NEVER click an option before the dropdown is open.
 
 KAPTURE CRM (adjetter.com / kapturecrm.com):
 22. Login: click Sign in with Google.
