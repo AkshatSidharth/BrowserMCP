@@ -897,7 +897,10 @@ function setStatus(state, text) {
 }
 
 function addStep(text, type = 'active') {
-  if (emptyState) emptyState.style.display = 'none';
+  // Hide the idle orb once we have real steps
+  const es = document.getElementById('emptyState');
+  if (es) es.style.display = 'none';
+
   const prev = stepsArea.querySelector('.step-item.active');
   if (prev) prev.classList.replace('active', 'done');
 
@@ -912,13 +915,10 @@ function addStep(text, type = 'active') {
 }
 
 function clearSteps() {
-  stepsArea.innerHTML = '';
-  if (emptyState) {
-    const clone = emptyState.cloneNode(true);
-    clone.id = 'emptyState';
-    clone.style.display = '';
-    stepsArea.appendChild(clone);
-  }
+  // Remove all step items but keep the idle orb
+  stepsArea.querySelectorAll('.step-item').forEach(el => el.remove());
+  const es = document.getElementById('emptyState');
+  if (es) es.style.display = '';
 }
 
 let _lastStepEl = null;
@@ -1003,10 +1003,7 @@ function resetMicBtn() {
   micLabel.textContent = 'Hold to speak';
 }
 
-async function getActiveTabId() {
-  const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-  return tab?.id ?? null;
-}
+// duplicate — removed (defined at line 365)
 
 async function startRecording() {
   if (isRecording) return;
@@ -1167,6 +1164,7 @@ async function init() {
     apiWarning.style.display = 'none';
     setStatus('ready', 'Ready');
   }
+  const hasSpeechAPI = ('webkitSpeechRecognition' in window || 'SpeechRecognition' in window);
   if (!hasSpeechAPI) {
     addStep('Web Speech API not found. Use Chrome for voice input.', 'error');
   }
