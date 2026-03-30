@@ -359,21 +359,26 @@ async function runAgentLoop(tabId, goal, onStep) {
     if (action.action === 'done')   return { success: true,  message: action.message };
     if (action.action === 'failed') return { success: false, message: action.message };
 
-    // Repeat-action guard: if GPT picks identical action 3 times in a row, force click_xy fallback
-    const recentSame = history.slice(-3).filter(h => h.startsWith(desc.slice(0, 30))).length;
-    if (recentSame >= 2 && ['click','click_xy','fill'].includes(action.action)) {
-      const stored = action.action === 'click' && action.index != null
-        ? await getSnapshot(tabId).then(s => {
-            const m = s.text.split('\n').find(l => l.startsWith(`[${action.index}]`));
-            const c = m?.match(/@\((\d+),(\d+)\)/);
-            return c ? { x: +c[1], y: +c[2] } : null;
-          }).catch(() => null)
-        : null;
-      if (stored) {
-        onStep({ type: 'step', text: `Step ${step}: retrying via coordinates (${stored.x},${stored.y})…` });
-        await sendAction(tabId, { action: 'click_xy', x: stored.x, y: stored.y });
-        history.push(`click_xy fallback at (${stored.x},${stored.y})`);
-        await new Promise(r => setTimeout(r, 1000));
+    // Repeat-action guard: track by action type + index, NOT description text
+    // GPT varies descriptions; action+index is stable
+    const actionKey = `${action.action}:${action.index ?? `${action.x},${action.y}`}`;
+    const recentKeys = history.map(h => h.split('||')[1]).filter(Boolean);
+    const repeatCount = recentKeys.slice(-4).filter(k => k === actionKey).length;
+
+    if (repeatCount >= 2 && (action.action === 'click' || action.action === 'click_xy')) {
+      // Extract stored coordinates from snapshot text for this element
+      const coordLine = snapshot.text.split('\n')
+        .find(l => action.index != null ? l.startsWith(`[${action.index}]`) : false);
+      const cm = coordLine?.match(/@\((\d+),(\d+)\)/);
+      if (cm) {
+        const fx = +cm[1], fy = +cm[2];
+        onStep({ type: 'step', text: `Step ${step}: click not responding — trying coordinate click at (${fx},${fy})…` });
+        await sendAction(tabId, { action: 'click_xy', x: fx, y: fy });
+        history.push(`coord fallback (${fx},${fy})||click_xy:${fx},${fy}`);
+        await new Promise(r => setTimeout(r, 1200));
+        const [t2] = await chrome.tabs.query({ active: true, currentWindow: true });
+        if (t2?.status === 'loading') await waitForTabLoad(t2.id);
+        prevSnapshotSig = '';
         continue;
       }
     }
@@ -396,7 +401,7 @@ async function runAgentLoop(tabId, goal, onStep) {
       result = { success: false, message: err.message };
     }
 
-    history.push(`${desc}: ${result?.success ? 'ok' : result?.message || '?'}`);
+    history.push(`${desc}: ${result?.success ? 'ok' : result?.message || '?'}||${actionKey}`);
     if (_abortLoop) return { success: false, message: 'Stopped by user.' };
 
     // Smart wait: fill/click actions that trigger navigation need longer settle

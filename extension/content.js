@@ -237,15 +237,20 @@ async function executeAction(msg) {
           return { success: false, message: `Element [${index}] not found` };
         }
         el.scrollIntoView({ block: 'nearest' });
-        el.focus();
-        // Primary: el.click() — triggers React/Angular synthetic events
-        el.click();
-        // Also fire pointer+mouse sequence for frameworks that need it
+        await new Promise(r => setTimeout(r, 60));
+        // Get LIVE bounding rect after scroll (not cached coordinates)
+        const rect = el.getBoundingClientRect();
+        const cx = Math.round(rect.left + rect.width / 2);
+        const cy = Math.round(rect.top  + rect.height / 2);
+        // Use the actual topmost element at those coordinates (handles portals/overlays)
+        const topEl = document.elementFromPoint(cx, cy) || el;
+        topEl.focus();
+        topEl.click(); // native — React/Vue/Angular respond to this
         for (const t of ['pointerdown','mousedown','pointerup','mouseup','click']) {
-          el.dispatchEvent(new (t.startsWith('pointer') ? PointerEvent : MouseEvent)(t,
-            { bubbles: true, cancelable: true, pointerId: 1 }));
+          topEl.dispatchEvent(new (t.startsWith('pointer') ? PointerEvent : MouseEvent)(t,
+            { bubbles: true, cancelable: true, clientX: cx, clientY: cy, pointerId: 1 }));
         }
-        return { success: true, message: `Clicked "${_els[index]?.name}"` };
+        return { success: true, message: `Clicked "${_els[index]?.name}" at (${cx},${cy})` };
       }
 
       case 'double_click': {
