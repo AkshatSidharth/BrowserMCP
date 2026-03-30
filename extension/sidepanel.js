@@ -139,7 +139,7 @@ Decide the MINIMUM set of actions to fulfill the command based on what you ACTUA
 
 Return ONE of these JSON types:
 
-1. DIRECT — element is visible on screen, 1–3 actions max:
+1. DIRECT — element is clearly visible on screen RIGHT NOW, 1–2 actions max (single click or single fill). Do NOT use direct if you need to first open a dropdown/modal before the real target appears:
    {"type":"direct","actions":[{"action":"click","index":N,"description":"..."}]}
    {"type":"direct","actions":[{"action":"fill","index":N,"value":"text","description":"..."},{"action":"press_on","index":N,"key":"Enter","description":"..."}]}
 
@@ -719,6 +719,10 @@ function pushHistory(t) { _cmdHistory.push(t); if (_cmdHistory.length > 5) _cmdH
 
 // Execute a sequence of direct actions (no loop needed)
 async function execDirect(tabId, actions, onStep) {
+  // Take one snapshot upfront so we can extract coords for CDP clicks
+  let snapshot = { text: '' };
+  try { snapshot = await getSnapshot(tabId); } catch {}
+
   for (const action of actions) {
     const desc = action.description || action.action;
     onStep({ type: 'step', text: desc });
@@ -728,16 +732,35 @@ async function execDirect(tabId, actions, onStep) {
     if (action.action === 'navigate') {
       await chrome.tabs.update(tabId, { url: action.url });
       await waitForTabLoad(tabId);
-    } else if (action.action === 'click_xy') {
-      try { await cdpClick(tabId, action.x, action.y); }
-      catch { await sendAction(tabId, action); }
+      // Refresh snapshot after navigation
+      try { snapshot = await getSnapshot(tabId); } catch {}
+    } else if (action.action === 'click' || action.action === 'click_xy') {
+      // Always try CDP first — real mouse events are most reliable
+      let x = action.x, y = action.y;
+      if (action.action === 'click' && action.index != null) {
+        // Extract coordinates from snapshot
+        const coordLine = snapshot.text.split('\n')
+          .find(l => l.trimStart().startsWith(`[${action.index}]`));
+        const cm = coordLine?.match(/@\((\d+),(\d+)\)/);
+        if (cm) { x = +cm[1]; y = +cm[2]; }
+      }
+      let cdpOk = false;
+      if (x != null && y != null) {
+        try { await cdpClick(tabId, x, y); cdpOk = true; } catch {}
+      }
+      if (!cdpOk) {
+        // Fallback: JS content-script click
+        await sendAction(tabId, action);
+      }
       await new Promise(r => setTimeout(r, 1000));
       const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
       if (tab?.status === 'loading') await waitForTabLoad(tab.id);
+      // Refresh snapshot so next click has fresh coords
+      try { snapshot = await getSnapshot(tabId); } catch {}
     } else {
       await sendAction(tabId, action);
-      const isNavAction = ['click','click_xy','press_on','press','select'].includes(action.action);
-      await new Promise(r => setTimeout(r, isNavAction ? 1000 : 300));
+      const isNavAction = ['press_on','press','select'].includes(action.action);
+      await new Promise(r => setTimeout(r, isNavAction ? 800 : 300));
       const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
       if (tab?.status === 'loading') await waitForTabLoad(tab.id);
     }
