@@ -103,7 +103,12 @@ async function getActivePage() {
   const contexts = _browser.contexts();
   if (!contexts.length) throw new Error('No browser contexts found.');
   const pages = contexts[0].pages();
-  if (!pages.length)    throw new Error('No open tabs found. Open a tab in Chrome first.');
+  if (!pages.length) {
+    // No tabs open — create a new one instead of failing
+    logger.info('No open tabs found — opening a new tab.');
+    _page = await contexts[0].newPage();
+    return _page;
+  }
 
   if (_page && !_page.isClosed()) return _page;
   _page = pages[pages.length - 1];

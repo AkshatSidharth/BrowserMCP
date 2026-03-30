@@ -42,6 +42,37 @@ function sendSSE(res, data) {
   res.write(`data: ${JSON.stringify(data)}\n\n`);
 }
 
+// ─── Phonetic / ASR normalization ─────────────────────────────────────────────
+// Whisper mishears brand names and domain-specific words. Normalize before
+// passing to the intent parser so commands resolve correctly.
+
+const PHONETIC_FIXES = [
+  // Brand name
+  [/\bcapture\b/gi,       'Kapture'],
+  [/\bcaptured?\b/gi,     'Kapture'],
+  [/\bcaptur\b/gi,        'Kapture'],
+  // Product names
+  [/\bseeds?\b/gi,        'CX'],          // "Kapture seeds" → "Kapture CX"
+  [/\bcream\b/gi,         'CRM'],         // "capture cream" → "Kapture CRM"
+  [/\bcram\b/gi,          'CRM'],
+  // Server names
+  [/\bin\s*two\b/gi,      'in2'],
+  [/\bin\s*three\b/gi,    'in3'],
+  [/\bin\s*2\b/gi,        'in2'],
+  [/\bin\s*3\b/gi,        'in3'],
+  // Common misreads
+  [/\badjeter\b/gi,       'Adjetter'],
+  [/\ba\s*jetter\b/gi,    'Adjetter'],
+  [/\bkotak\s*bank\b/gi,  'Kotak'],
+  [/\bindus\s*tower\b/gi, 'Indus Towers'],
+];
+
+function normalizeText(text) {
+  let out = text;
+  for (const [pattern, fix] of PHONETIC_FIXES) out = out.replace(pattern, fix);
+  return out;
+}
+
 // ─── Conversational context window ────────────────────────────────────────────
 // Rolling window of last 5 raw commands. Passed to the intent parser so it can
 // resolve fragments ("it", "again", "the song", "any Eminem song" after "play").
@@ -63,13 +94,15 @@ function getRecentContext() {
 async function runCommand(text, onStep, _isSubCommand = false) {
   if (!text?.trim()) return { ok: false, message: 'Empty command.' };
 
+  const normalized = normalizeText(text.trim());
+
   // Build context from recent history (skip for sub-commands — they already
   // have the right context baked in from compound_act splitting)
   const context = _isSubCommand ? '' : getRecentContext();
-  const intent  = await parseIntent(text.trim(), context);
+  const intent  = await parseIntent(normalized, context);
 
-  // Track in history (top-level commands only)
-  if (!_isSubCommand) pushHistory(text.trim());
+  // Track normalized text in history (top-level commands only)
+  if (!_isSubCommand) pushHistory(normalized);
   logger.info(`Command: "${text}" → action="${intent.action}" params=${JSON.stringify(intent.params)}`);
 
   const { ok, reason } = validateAction(intent);
@@ -169,7 +202,9 @@ app.post('/voice', upload.single('audio'), async (req, res) => {
       file: fs.createReadStream(audioPath),
       // No language lock — auto-detect handles English, Hindi, Hinglish
     });
-    const text = response.text.trim();
+    const rawText = response.text.trim();
+    const text    = normalizeText(rawText);
+    if (text !== rawText) logger.info(`ASR fix: "${rawText}" → "${text}"`);
     logger.info(`Transcribed: "${text}"`);
     sendSSE(res, { type: 'transcript', text });
     sendSSE(res, { type: 'step', message: `Heard: "${text}"` });
