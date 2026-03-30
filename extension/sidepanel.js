@@ -183,6 +183,23 @@ KAPTURE CRM (adjetter.com / kapturecrm.com):
 22. Login: click Sign in with Google.
 23. Partner login flow: LOGIN TO PARTNER EMPLOYEE → Select Admin Server → Domain Name (react-select: type to search) → Select Employee → Remarks (5+ words) → Submit.
 
+KAPTURE VOICE AGENT CREATION (kapturecrm.com/app/workspace/.../aiagents):
+24. Full flow when user says "create a voice agent" / "make a new agent" / "create from scratch":
+    a) Go to AI Agents page → click "Create New" button.
+    b) PAGE 1 — Industry selection: page shows cards "From Scratch", "Energy", "E-commerce", "BFSI", "Healthcare", "Travel".
+       Click the appropriate card (default: "From Scratch" unless user specified industry).
+       Wait for card to show checkmark (selected state), then look for a "Next" / "Continue" button — OR the page auto-advances.
+    c) PAGE 2 — Agent details form:
+       - Fill "Agent's Name" input with a name (use what user said, e.g. "Voice Bot" if not specified).
+       - Click "Single" or "Multi" card for Agent Type (default: Single).
+       - Fill "Purpose" textarea with a description of the agent's purpose.
+       - Click "Start Building" button (it becomes active once name + purpose are filled).
+    d) PAGE 3 — Agent builder (tabs: Model, Tools, Transcriber, Voice, Test, Deploy):
+       - Select LLM Model card: click "Chat GPT" radio card (default) or whatever user specified.
+       - Click the Agent Prompts textarea and type the system prompt.
+       - Click "Save & update" button when done.
+    e) Return done when on the builder page (URL contains /aiagents/.../voice/...).
+
 STUCK DETECTION:
 24. If snapshot looks identical to previous step, try scrolling or a different element.
 25. If an element click fails (not found), use click_xy at the element's @(cx,cy) as fallback.
