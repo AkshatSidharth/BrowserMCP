@@ -11,6 +11,9 @@ const PHONETIC_FIXES = [
   [/\bin\s*three\b/gi,  'in3'],
   [/\badjeter\b/gi,     'Adjetter'],
   [/\ba\s*jetter\b/gi,  'Adjetter'],
+  [/\bau\s+agent/gi,    'AI agent'],
+  [/\bay\s+agent/gi,    'AI agent'],
+  [/\bAI\s+age\b/gi,    'AI agent'],
 ];
 function normalizeText(t) {
   for (const [p, r] of PHONETIC_FIXES) t = t.replace(p, r);
@@ -66,6 +69,7 @@ const INTENT_PROMPT = `
 You are a browser automation intent classifier. Parse the user's voice/text command.
 
 Return ONE of these JSON actions:
+- {"action":"click_element","params":{"target":"..."}}       ← click ONE named element on the page
 - {"action":"smart_act","params":{"command":"..."}}          ← multi-step browser task
 - {"action":"navigate","params":{"url":"https://..."}}       ← go to a URL
 - {"action":"scroll_act","params":{"direction":"down"}}      ← scroll (up/down/top/bottom)
@@ -77,10 +81,11 @@ Rules:
 2. play/pause/mute/volume → media_act
 3. "open X.com" → navigate with full URL
 4. "my number/email/password is X" → fill_input
-5. "login to Kotak/Indus/Bigbasket/<any client>" → smart_act command:
+5. "click on X" / "open X" / "go to X tab" / "select X" (single element on page) → click_element with target=X
+7. "login to Kotak/Indus/Bigbasket/<any client>" → smart_act command:
    "Kapture partner login for <CLIENT>: navigate https://adjetter.com/admin/home.html, sign in with Google if needed, click LOGIN TO PARTNER EMPLOYEE, select admin server https://in.kapturecrm.com, select domain <CLIENT> from searchable dropdown, select employee, fill Remarks (5+ words), click Submit"
-6. "open Kapture" / "Kapture admin" → smart_act navigate adjetter.com/admin/home.html
-7. Everything else → smart_act with the full command text
+8. "open Kapture" / "Kapture admin" → smart_act navigate adjetter.com/admin/home.html
+9. Everything else that needs multiple steps → smart_act with the full command text
 
 Return ONLY valid JSON. No markdown.
 `.trim();
@@ -214,6 +219,43 @@ async function sendAction(tabId, action) {
   return chrome.tabs.sendMessage(tabId, { type: 'EXECUTE_ACTION', ...action });
 }
 
+// ── Quick click — no GPT loop, just fuzzy snapshot match ─────────────────────
+function fuzzyScore(name, needle) {
+  const n = name.toLowerCase(), q = needle.toLowerCase();
+  if (n === q) return 100;
+  if (n.includes(q) || q.includes(n)) return 80;
+  const qWords = q.split(/\s+/);
+  const nWords = n.split(/[\s\-_/]+/);
+  const hits = qWords.filter(w => nWords.some(nw => nw.startsWith(w) || w.startsWith(nw)));
+  return Math.round((hits.length / qWords.length) * 60);
+}
+
+async function quickClick(tabId, target, onStep) {
+  onStep({ type: 'step', text: `Looking for "${target}"…` });
+  let snapshot;
+  try { snapshot = await getSnapshot(tabId); } catch { return null; }
+
+  const lines = (snapshot.text || '').split('\n');
+  let best = null, bestScore = 0;
+  for (const line of lines) {
+    const m = line.match(/^\[(\d+)\][^"]*"([^"]+)"/);
+    if (!m) continue;
+    const score = fuzzyScore(m[2], target);
+    if (score > bestScore) { bestScore = score; best = { idx: parseInt(m[1]), name: m[2] }; }
+  }
+
+  if (!best || bestScore < 35) return null; // not found — caller falls back to agent loop
+
+  onStep({ type: 'step', text: `Clicking "${best.name}"…` });
+  const result = await sendAction(tabId, { action: 'click', index: best.idx });
+  if (!result?.success) return null;
+
+  await new Promise(r => setTimeout(r, 800));
+  const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+  if (tab?.status === 'loading') await waitForTabLoad(tab.id);
+  return { success: true, message: `Clicked "${best.name}"` };
+}
+
 // ── Agent loop ────────────────────────────────────────────────────────────────
 let _abortLoop = false;
 
@@ -303,6 +345,14 @@ async function runCommand(text, onStep) {
   if (!tabId) return { success: false, message: 'No active browser tab.' };
 
   switch (intent.action) {
+    case 'click_element': {
+      const target = intent.params?.target || norm;
+      const r = await quickClick(tabId, target, onStep);
+      if (r) return r;
+      // Not found on first glance — fall back to agent loop
+      return runAgentLoop(tabId, `Click on "${target}"`, onStep);
+    }
+
     case 'navigate': {
       await chrome.tabs.update(tabId, { url: intent.params.url });
       await waitForTabLoad(tabId);
