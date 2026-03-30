@@ -27,7 +27,7 @@ async function getApiKey() {
 }
 
 // ── OpenAI fetch ──────────────────────────────────────────────────────────────
-async function callOpenAI(messages, { model = 'gpt-4o', maxTokens = 512, json = false } = {}) {
+async function callOpenAI(messages, { model = 'gpt-4.1', maxTokens = 512, json = false } = {}) {
   const apiKey = await getApiKey();
   if (!apiKey) throw new Error('No API key. Click ⚙️ Settings to add your OpenAI key.');
 
@@ -208,6 +208,12 @@ Element format: [idx] state role "name" val:"value" [type] @(cx,cy)
 
 Return ONE JSON action per turn. Return ONLY valid JSON, no markdown, no explanation.
 
+⚠️ ANTI-HALLUCINATION RULES (NEVER BREAK):
+- ONLY use [idx] numbers that appear verbatim in the "Current page:" element list.
+- NEVER invent, guess, or assume an element index exists. If unsure, use click_xy with @(cx,cy) coords from screenshot instead.
+- If the target element is NOT in the element list AND not visible in screenshot, return ask — do NOT fabricate an action.
+- Base EVERY decision on what is ACTUALLY shown in the screenshot and element list, not on what you expect the page to look like.
+
 ACTIONS:
 click      {"action":"click","index":N,"description":"..."}
 fill       {"action":"fill","index":N,"value":"text","description":"..."}
@@ -302,11 +308,20 @@ STUCK DETECTION:
 26. After 3 failed attempts on same step, return failed with a clear reason.
 `.trim();
 
+// Parse valid indices from snapshot text e.g. "[3] enabled button..." → Set{3}
+function parseSnapshotIndices(pageText) {
+  const indices = new Set();
+  for (const m of pageText.matchAll(/^\s*\[(\d+)\]/gm)) indices.add(parseInt(m[1]));
+  return indices;
+}
+
 async function getNextStep(goal, pageText, screenshotUrl, history) {
-  const hist = history.length
-    ? '\nSteps done:\n' + history.map((h, i) => `${i + 1}. ${h}`).join('\n')
+  // Keep only last 8 steps to prevent context drift / hallucination from long history
+  const recentHistory = history.slice(-8);
+  const hist = recentHistory.length
+    ? '\nSteps done (recent):\n' + recentHistory.map((h, i) => `${i + 1}. ${h}`).join('\n')
     : '\nNo steps yet.';
-  const goalText = `GOAL: ${goal}${hist}\n\nCurrent page:\n${pageText}\n\nNext single action?`;
+  const goalText = `GOAL: ${goal}${hist}\n\nCurrent page (ONLY use indices from this list):\n${pageText}\n\nNext single action?`;
 
   const userContent = screenshotUrl
     ? [
@@ -319,7 +334,28 @@ async function getNextStep(goal, pageText, screenshotUrl, history) {
     [{ role: 'system', content: AGENT_PROMPT }, { role: 'user', content: userContent }],
     { maxTokens: 800, json: true }
   );
-  return JSON.parse(raw);
+  const action = JSON.parse(raw);
+
+  // Validate: if action uses an index, confirm it exists in the snapshot
+  if (action.index != null && !['done','failed','ask'].includes(action.action)) {
+    const validIndices = parseSnapshotIndices(pageText);
+    if (validIndices.size > 0 && !validIndices.has(action.index)) {
+      // Index hallucinated — retry once with an explicit correction
+      const correction = `Your last response used index ${action.index} which does NOT exist in the element list. Valid indices are: [${[...validIndices].join(', ')}]. Look at the element list again and return a valid action using only those indices. If no element matches, use click_xy with coordinates from the screenshot.`;
+      const raw2 = await callOpenAI(
+        [
+          { role: 'system', content: AGENT_PROMPT },
+          { role: 'user', content: userContent },
+          { role: 'assistant', content: raw },
+          { role: 'user', content: correction },
+        ],
+        { maxTokens: 800, json: true }
+      );
+      return JSON.parse(raw2);
+    }
+  }
+
+  return action;
 }
 
 // ── Tab helpers ───────────────────────────────────────────────────────────────
