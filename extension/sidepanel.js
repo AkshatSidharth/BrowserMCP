@@ -27,7 +27,7 @@ async function getApiKey() {
 }
 
 // ── OpenAI fetch ──────────────────────────────────────────────────────────────
-async function callOpenAI(messages, { model = 'gpt-4.1', maxTokens = 512, json = false } = {}) {
+async function callOpenAI(messages, { model = 'gpt-5.1', maxTokens = 512, json = false } = {}) {
   const apiKey = await getApiKey();
   if (!apiKey) throw new Error('No API key. Click ⚙️ Settings to add your OpenAI key.');
 
