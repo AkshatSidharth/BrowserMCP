@@ -135,12 +135,14 @@ async function enrichWithCoords(page, elements) {
   for (const el of elements) {
     try {
       const { pwRole, name } = el.locator;
+      // For iframe elements, search within the frame; for main page use page
+      const root = el._frame || page;
       const strategies = [
-        () => page.getByRole(pwRole, { name, exact: true }).first(),
-        () => page.getByRole(pwRole, { name, exact: false }).first(),
-        () => page.getByLabel(name, { exact: false }).first(),
-        () => page.getByPlaceholder(name, { exact: false }).first(),
-        () => page.getByText(name, { exact: true }).first(),
+        () => root.getByRole(pwRole, { name, exact: true }).first(),
+        () => root.getByRole(pwRole, { name, exact: false }).first(),
+        () => root.getByLabel(name, { exact: false }).first(),
+        () => root.getByPlaceholder(name, { exact: false }).first(),
+        () => root.getByText(name, { exact: true }).first(),
       ];
 
       let box = null;
@@ -292,9 +294,13 @@ async function extractPageContext(page) {
   let elements = [];
 
   // 1. Primary: page.ariaSnapshot() (Playwright ≥ 1.46)
+  //    mode:'ai' strips structural noise and flattens tree for LLM consumption
+  //    (from Playwright MCP's tab.captureSnapshot implementation)
   let usedAriaSnapshot = false;
   try {
-    const yaml = await page.ariaSnapshot({ timeout: 5000 }).catch(() => null);
+    const yaml = await page.ariaSnapshot({ timeout: 5000, mode: 'ai' }).catch(() =>
+      page.ariaSnapshot({ timeout: 5000 }).catch(() => null)  // fallback: no mode option
+    );
     if (yaml) {
       elements = parseAriaSnapshot(yaml);
       usedAriaSnapshot = true;
@@ -308,6 +314,36 @@ async function extractPageContext(page) {
       if (a11y) walkA11yTree(a11y, elements);
     } catch { /* unavailable */ }
   }
+
+  // 3. Iframe scanning — from Playwright MCP's frame-aware snapshot
+  //    Many enterprise/CRM pages embed content in iframes (chat widgets, reports, etc.)
+  //    Playwright MCP uses: aria-ref=<ref> >> internal:control=enter-frame
+  try {
+    const frames = page.frames().filter(f => f !== page.mainFrame() && !f.isDetached());
+    for (const frame of frames.slice(0, 3)) { // max 3 iframes to avoid timeout
+      try {
+        const frameYaml = await frame.locator('body').ariaSnapshot({ timeout: 2000, mode: 'ai' })
+          .catch(() => frame.locator('body').ariaSnapshot({ timeout: 2000 }).catch(() => null));
+        if (frameYaml) {
+          const frameEls = parseAriaSnapshot(frameYaml);
+          const frameUrl = frame.url();
+          // Tag elements with their frame source so agent knows context
+          for (const el of frameEls) {
+            el._frame = frame;
+            el._frameUrl = frameUrl;
+            el.name = el.name; // keep as-is, frame context shown in output
+          }
+          const existingNames = new Set(elements.map(e => e.name.toLowerCase()));
+          for (const el of frameEls) {
+            if (!existingNames.has(el.name.toLowerCase())) {
+              elements.push(el);
+              existingNames.add(el.name.toLowerCase());
+            }
+          }
+        }
+      } catch { /* frame scan failed — skip */ }
+    }
+  } catch { /* frames() failed */ }
 
   // 3. DOM fallback: pick up elements the a11y tree missed
   const domElements = await domFallbackScan(page);
