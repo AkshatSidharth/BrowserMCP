@@ -455,8 +455,9 @@ async function runAgentLoop(tabId, goal, onStep, opts = {}) {
     const desc = action.description || action.action;
     onStep({ type: 'step', text: `Step ${step}: ${desc}` });
 
-    // Narrate what the agent is about to do
-    speak(desc);
+    // Narrate only meaningful interactions (clicks, fills, selections — not waits/reads)
+    const NARRATE_ACTIONS = ['click','click_xy','fill','select','press_on','type','evaluate'];
+    if (NARRATE_ACTIONS.includes(action.action)) speak(desc);
 
     if (action.action === 'done')   { speak(action.message || 'Done.'); return { success: true,  message: action.message }; }
     if (action.action === 'failed') { speak(action.message || 'I ran into an issue.'); return { success: false, message: action.message }; }
