@@ -237,19 +237,21 @@ async function executeAction(msg) {
           return { success: false, message: `Element [${index}] not found` };
         }
         el.scrollIntoView({ block: 'nearest' });
-        await new Promise(r => setTimeout(r, 60));
+        await new Promise(r => setTimeout(r, 80));
         // Get LIVE bounding rect after scroll (not cached coordinates)
         const rect = el.getBoundingClientRect();
         const cx = Math.round(rect.left + rect.width / 2);
         const cy = Math.round(rect.top  + rect.height / 2);
-        // Use the actual topmost element at those coordinates (handles portals/overlays)
+        // Use the actual topmost element at those coordinates (handles React portals/overlays)
         const topEl = document.elementFromPoint(cx, cy) || el;
         topEl.focus();
-        topEl.click(); // native — React/Vue/Angular respond to this
+        topEl.click(); // native click — React/Vue/Angular respond to this
         for (const t of ['pointerdown','mousedown','pointerup','mouseup','click']) {
           topEl.dispatchEvent(new (t.startsWith('pointer') ? PointerEvent : MouseEvent)(t,
             { bubbles: true, cancelable: true, clientX: cx, clientY: cy, pointerId: 1 }));
         }
+        // Let React/Angular flush state before returning
+        await new Promise(r => setTimeout(r, 120));
         return { success: true, message: `Clicked "${_els[index]?.name}" at (${cx},${cy})` };
       }
 

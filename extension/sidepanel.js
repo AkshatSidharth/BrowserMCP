@@ -359,27 +359,37 @@ async function runAgentLoop(tabId, goal, onStep) {
     if (action.action === 'done')   return { success: true,  message: action.message };
     if (action.action === 'failed') return { success: false, message: action.message };
 
-    // Repeat-action guard: track by action type + index, NOT description text
-    // GPT varies descriptions; action+index is stable
-    const actionKey = `${action.action}:${action.index ?? `${action.x},${action.y}`}`;
+    // Action key (stable — not description which GPT varies every turn)
+    const actionKey = `${action.action}:${action.index ?? `${action.x ?? ''},${action.y ?? ''}`}`;
+
+    // ── Single-action repeat guard ────────────────────────────────────────
     const recentKeys = history.map(h => h.split('||')[1]).filter(Boolean);
     const repeatCount = recentKeys.slice(-4).filter(k => k === actionKey).length;
-
     if (repeatCount >= 2 && (action.action === 'click' || action.action === 'click_xy')) {
-      // Extract stored coordinates from snapshot text for this element
       const coordLine = snapshot.text.split('\n')
-        .find(l => action.index != null ? l.startsWith(`[${action.index}]`) : false);
+        .find(l => action.index != null ? l.trimStart().startsWith(`[${action.index}]`) : false);
       const cm = coordLine?.match(/@\((\d+),(\d+)\)/);
       if (cm) {
         const fx = +cm[1], fy = +cm[2];
-        onStep({ type: 'step', text: `Step ${step}: click not responding — trying coordinate click at (${fx},${fy})…` });
+        onStep({ type: 'step', text: `Step ${step}: click unresponsive — forcing coordinate click at (${fx},${fy})…` });
         await sendAction(tabId, { action: 'click_xy', x: fx, y: fy });
         history.push(`coord fallback (${fx},${fy})||click_xy:${fx},${fy}`);
-        await new Promise(r => setTimeout(r, 1200));
+        await new Promise(r => setTimeout(r, 1500));
         const [t2] = await chrome.tabs.query({ active: true, currentWindow: true });
         if (t2?.status === 'loading') await waitForTabLoad(t2.id);
         prevSnapshotSig = '';
         continue;
+      }
+    }
+
+    // ── Cycle detection (e.g. A→B→C repeating) ───────────────────────────
+    if (recentKeys.length >= 6) {
+      for (const cycleLen of [2, 3]) {
+        const tail = recentKeys.slice(-cycleLen * 2);
+        if (tail.length === cycleLen * 2 &&
+            tail.slice(0, cycleLen).join() === tail.slice(cycleLen).join()) {
+          return { success: false, message: `Stuck in a ${cycleLen}-step loop. The clicks are not changing the page. Please navigate manually or try a different command.` };
+        }
       }
     }
 
@@ -404,9 +414,9 @@ async function runAgentLoop(tabId, goal, onStep) {
     history.push(`${desc}: ${result?.success ? 'ok' : result?.message || '?'}||${actionKey}`);
     if (_abortLoop) return { success: false, message: 'Stopped by user.' };
 
-    // Smart wait: fill/click actions that trigger navigation need longer settle
+    // Smart wait: clicks/press may open modals or trigger navigation — wait for DOM to settle
     const isNavAction = ['click','click_xy','press_on','press','select'].includes(action.action);
-    await new Promise(r => setTimeout(r, isNavAction ? 900 : 400));
+    await new Promise(r => setTimeout(r, isNavAction ? 1200 : 400));
 
     // Check if page is loading after action
     const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
