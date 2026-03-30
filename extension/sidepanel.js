@@ -402,13 +402,65 @@ async function submitCommand(text) {
   }
 }
 
-// ── Voice recording with MediaRecorder + Whisper ──────────────────────────────
-let mediaRecorder = null;
-let audioChunks   = [];
-let isRecording   = false;
+// ── Voice recording — permission requested ONCE on load ───────────────────────
+// getUserMedia is called once during init to trigger the browser's permission
+// prompt. After that, we open a new stream per recording session but Chrome
+// won't re-prompt because permission is already granted.
+
+let micPermission  = 'prompt'; // 'granted' | 'denied' | 'prompt'
+let mediaRecorder  = null;
+let audioChunks    = [];
+let isRecording    = false;
+
+async function requestMicPermission() {
+  try {
+    // Check current state first
+    const status = await navigator.permissions.query({ name: 'microphone' });
+    micPermission = status.state;
+    status.onchange = () => { micPermission = status.state; updateMicButton(); };
+
+    if (micPermission === 'granted') { updateMicButton(); return true; }
+    if (micPermission === 'denied')  { updateMicButton(); return false; }
+
+    // 'prompt' — request it now (requires user gesture, so we show a button first)
+    updateMicButton();
+    return false;
+  } catch {
+    // permissions API not available — try directly
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      stream.getTracks().forEach(t => t.stop());
+      micPermission = 'granted';
+      updateMicButton();
+      return true;
+    } catch {
+      micPermission = 'denied';
+      updateMicButton();
+      return false;
+    }
+  }
+}
+
+function updateMicButton() {
+  if (micPermission === 'denied') {
+    micBtn.classList.add('disabled');
+    micIcon.textContent  = '🚫';
+    micLabel.textContent = 'Mic blocked — see instructions';
+    addStep('Microphone blocked. Go to Chrome Settings → Privacy → Microphone → Allow.', 'error');
+  } else if (micPermission === 'prompt') {
+    micIcon.textContent  = '🎤';
+    micLabel.textContent = 'Click to allow microphone';
+  } else {
+    micIcon.textContent  = '🎤';
+    micLabel.textContent = 'Hold to speak';
+    micBtn.classList.remove('disabled');
+  }
+}
 
 async function startRecording() {
+  // Open a fresh stream — no re-prompt if permission already granted
   const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+  micPermission = 'granted';
   const mimeType = MediaRecorder.isTypeSupported('audio/webm;codecs=opus')
     ? 'audio/webm;codecs=opus' : 'audio/webm';
   mediaRecorder = new MediaRecorder(stream, { mimeType });
@@ -438,18 +490,39 @@ async function stopRecordingAndTranscribe() {
   });
 }
 
-// Hold to record
+// Hold to record — on first click if 'prompt', we request permission then start
 micBtn.addEventListener('mousedown', async () => {
-  if (micBtn.disabled) return;
+  if (isRecording) return;
+
+  // If permission not yet granted, request it now (this IS a user gesture)
+  if (micPermission !== 'granted') {
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      stream.getTracks().forEach(t => t.stop());
+      micPermission = 'granted';
+      updateMicButton();
+      addStep('Microphone access granted ✓', 'success');
+    } catch (err) {
+      micPermission = 'denied';
+      updateMicButton();
+      addStep(`Mic permission denied: ${err.message}`, 'error');
+    }
+    return; // Don't start recording on the same click as permission grant
+  }
+
+  if (micBtn.classList.contains('disabled')) return;
+
   try {
     await startRecording();
     micBtn.classList.add('listening');
     micIcon.textContent  = '⏹';
     micLabel.textContent = 'Release to send';
     setStatus('running', 'Listening…');
-    transcriptEl.textContent  = '…';
-    transcriptEl.className    = 'transcript-text interim';
+    transcriptEl.textContent = '…';
+    transcriptEl.className   = 'transcript-text interim';
   } catch (err) {
+    micPermission = 'denied';
+    updateMicButton();
     addStep(`Mic error: ${err.message}`, 'error');
   }
 });
@@ -498,6 +571,8 @@ async function init() {
     apiWarning.style.display = 'none';
     setStatus('ready', 'Ready');
   }
+  // Check mic permission state without prompting
+  await requestMicPermission();
 }
 
 init();
