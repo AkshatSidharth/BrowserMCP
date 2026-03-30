@@ -156,7 +156,8 @@ NAVIGATE rules (highest priority — check these FIRST):
 3. scroll up/down/top/bottom → scroll_act
 4. play/pause/mute/volume → media_act
 5. "my number/email/password is X" → fill_input
-6. "click on X" / "select X" / "go to X tab" (element already visible on the current page) → click_element
+6. "click on X" / "select X" / "go to X tab" / "change X to Y" / "switch to Y" / "set X to Y"
+   where X/Y is an element name already visible on the current page → click_element with target=Y
 6b. "create a voice agent" / "make a new agent" / "create a bot for X" / "build a voice bot for [company] to [purpose]" → create_agent
     Extract: name (e.g. "Customer Support Bot"), purpose (what the bot does), company (client name), industry (From Scratch / E-commerce / BFSI / Healthcare / Travel / Energy)
     If not specified: name="Voice Assistant", industry="From Scratch"
@@ -213,8 +214,9 @@ ask        {"action":"ask","question":"What should I do next?"}
 GENERAL RULES:
 1. Study the screenshot first. Use click_xy for elements visible in screenshot but absent from the elements list.
 2. Dismiss modals / cookie banners / overlays FIRST (Escape or click close/accept/continue button).
-3. If goal is already done (item in cart, page loaded, form submitted), return done immediately.
-4. Never repeat the same failed action twice. Try click_xy fallback using @(cx,cy) coordinates.
+3. If goal is already done (item in cart, page loaded, form submitted, option selected), return done immediately.
+4. After clicking ANY "Save", "Save & update", "Submit", "Update", or "Confirm" button → return done IMMEDIATELY. Do NOT re-read the page or click again.
+5. Never repeat the same failed action twice. Try click_xy fallback using @(cx,cy) coordinates.
 5. Never ask the user for values. If a value is unknown, use what makes sense from context.
 
 SEARCH BARS (Google, Amazon, Flipkart, Myntra, etc.):
@@ -575,6 +577,15 @@ async function runAgentLoop(tabId, goal, onStep, opts = {}) {
 
     history.push(`${desc}: ${result?.success ? 'ok' : result?.message || '?'}||${actionKey}`);
     if (_abortLoop) return { success: false, message: 'Stopped by user.' };
+
+    // Auto-done after any Save/Submit/Update click — don't loop after saving
+    if (result?.success && action.action === 'click') {
+      const nm = (action.description || '').toLowerCase();
+      if (/save|submit|update|confirm/.test(nm)) {
+        speak('Saved.');
+        return { success: true, message: `Done — ${action.description}` };
+      }
+    }
 
     // Smart wait: clicks/press may open modals or trigger navigation — wait for DOM to settle
     const isNavAction = ['click','click_xy','press_on','press','select'].includes(action.action);
