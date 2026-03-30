@@ -1,0 +1,503 @@
+'use strict';
+
+// ── Phonetic normalization (same as server/index.js) ─────────────────────────
+const PHONETIC_FIXES = [
+  [/\bcapture[d]?\b/gi, 'Kapture'],
+  [/\bcaptur\b/gi,      'Kapture'],
+  [/\bseeds?\b/gi,      'CX'],
+  [/\bcream\b/gi,       'CRM'],
+  [/\bcram\b/gi,        'CRM'],
+  [/\bin\s*two\b/gi,    'in2'],
+  [/\bin\s*three\b/gi,  'in3'],
+  [/\badjeter\b/gi,     'Adjetter'],
+  [/\ba\s*jetter\b/gi,  'Adjetter'],
+];
+function normalizeText(t) {
+  for (const [p, r] of PHONETIC_FIXES) t = t.replace(p, r);
+  return t;
+}
+
+// ── Storage helpers ───────────────────────────────────────────────────────────
+async function getApiKey() {
+  const r = await chrome.storage.local.get('openaiApiKey');
+  return r.openaiApiKey || '';
+}
+
+// ── OpenAI fetch ──────────────────────────────────────────────────────────────
+async function callOpenAI(messages, { model = 'gpt-4o', maxTokens = 512, json = false } = {}) {
+  const apiKey = await getApiKey();
+  if (!apiKey) throw new Error('No API key. Click ⚙️ Settings to add your OpenAI key.');
+
+  const body = { model, messages, max_tokens: maxTokens, temperature: 0 };
+  if (json) body.response_format = { type: 'json_object' };
+
+  const resp = await fetch('https://api.openai.com/v1/chat/completions', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${apiKey}` },
+    body: JSON.stringify(body),
+  });
+
+  if (!resp.ok) {
+    const e = await resp.json().catch(() => ({}));
+    throw new Error(e.error?.message || `OpenAI ${resp.status}`);
+  }
+  const data = await resp.json();
+  return data.choices[0]?.message?.content || '';
+}
+
+// ── Whisper transcription ─────────────────────────────────────────────────────
+async function transcribeAudio(blob) {
+  const apiKey = await getApiKey();
+  if (!apiKey) throw new Error('No API key set.');
+  const fd = new FormData();
+  fd.append('file', blob, 'audio.webm');
+  fd.append('model', 'whisper-1');
+  const resp = await fetch('https://api.openai.com/v1/audio/transcriptions', {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${apiKey}` },
+    body: fd,
+  });
+  const data = await resp.json();
+  return data.text?.trim() || '';
+}
+
+// ── Intent parser ─────────────────────────────────────────────────────────────
+const INTENT_PROMPT = `
+You are a browser automation intent classifier. Parse the user's voice/text command.
+
+Return ONE of these JSON actions:
+- {"action":"smart_act","params":{"command":"..."}}          ← multi-step browser task
+- {"action":"navigate","params":{"url":"https://..."}}       ← go to a URL
+- {"action":"scroll_act","params":{"direction":"down"}}      ← scroll (up/down/top/bottom)
+- {"action":"media_act","params":{"operation":"pause"}}      ← media control (pause/play/mute/unmute/toggle/volume_up/volume_down)
+- {"action":"fill_input","params":{"field":"...","value":""}}← fill a specific form field
+
+Rules:
+1. scroll up/down/top/bottom → scroll_act
+2. play/pause/mute/volume → media_act
+3. "open X.com" → navigate with full URL
+4. "my number/email/password is X" → fill_input
+5. "login to Kotak/Indus/Bigbasket/<any client>" → smart_act command:
+   "Kapture partner login for <CLIENT>: navigate https://adjetter.com/admin/home.html, sign in with Google if needed, click LOGIN TO PARTNER EMPLOYEE, select admin server https://in.kapturecrm.com, select domain <CLIENT> from searchable dropdown, select employee, fill Remarks (5+ words), click Submit"
+6. "open Kapture" / "Kapture admin" → smart_act navigate adjetter.com/admin/home.html
+7. Everything else → smart_act with the full command text
+
+Return ONLY valid JSON. No markdown.
+`.trim();
+
+async function parseIntent(text, context = '') {
+  const user = context ? `Recent:\n${context}\n\nCommand: "${text}"` : `Command: "${text}"`;
+  try {
+    const raw = await callOpenAI(
+      [{ role: 'system', content: INTENT_PROMPT }, { role: 'user', content: user }],
+      { maxTokens: 200, json: true }
+    );
+    return JSON.parse(raw);
+  } catch {
+    return { action: 'smart_act', params: { command: text } };
+  }
+}
+
+// ── Agent system prompt ───────────────────────────────────────────────────────
+const AGENT_PROMPT = `
+You are an autonomous browser agent. You see a screenshot + interactive elements list.
+Each element: [index] state role "name" val [type] @(cx,cy)
+[react-select] = custom searchable dropdown. To use: click it → type to search → click option. NEVER use "select" action on it.
+
+Return ONE JSON action per turn. Return ONLY valid JSON.
+
+Actions:
+click       → {"action":"click","index":N,"description":"..."}
+fill        → {"action":"fill","index":N,"value":"...","description":"..."}
+press_on    → {"action":"press_on","index":N,"key":"Enter","description":"..."}
+click_xy    → {"action":"click_xy","x":N,"y":N,"description":"..."}
+scroll      → {"action":"scroll","direction":"down","amount":300,"description":"..."}
+scroll_xy   → {"action":"scroll_xy","x":N,"y":N,"direction":"down","amount":300,"description":"..."}
+select      → {"action":"select","index":N,"value":"option text","description":"..."}
+press       → {"action":"press","key":"Enter","description":"..."}
+type        → {"action":"type","text":"...","description":"..."}
+hover_xy    → {"action":"hover_xy","x":N,"y":N,"description":"..."}
+drag_xy     → {"action":"drag_xy","x1":N,"y1":N,"x2":N,"y2":N,"description":"..."}
+evaluate    → {"action":"evaluate","script":"document.title","description":"..."}
+navigate    → {"action":"navigate","url":"https://...","description":"..."}
+wait        → {"action":"wait","ms":1000,"description":"..."}
+done        → {"action":"done","message":"..."}
+failed      → {"action":"failed","message":"..."}
+
+Rules:
+1. Always check screenshot first to identify page state.
+2. Dismiss cookie banners / popups before anything else.
+3. SEARCH BARS: fill input → press_on same index with Enter.
+4. REACT SELECT dropdowns: click → type to filter → click option. Never use "select".
+5. PRICE FILTERS: use evaluate to detect type (input[type=range] / select / text input / custom div), then appropriate method.
+6. KAPTURE PARTNER LOGIN (adjetter.com / kapturecrm.com):
+   a) Login page → click Sign in with Google
+   b) Home page → click LOGIN TO PARTNER EMPLOYEE
+   c) Partner page → click Select Admin Server (top-right) → choose server
+   d) SELECT DOMAIN section → click Domain Name react-select → type client → pick match
+   e) EMPLOYEE LOGIN section → click Select Employee react-select → pick employee
+   f) REMARKS → fill 5+ words
+   g) Click Submit → success when on *.kapturecrm.com/app/workspace
+7. After completing goal return done immediately. Do not repeat already-done actions.
+8. Be decisive — voice assistant, user cannot type. Use context or focus field and say ready.
+9. NEVER ask user for values. If value not in goal/context, focus field and return done("ready").
+`.trim();
+
+async function getNextStep(goal, pageText, screenshotUrl, history) {
+  const hist = history.length
+    ? '\nSteps done:\n' + history.map((h, i) => `${i + 1}. ${h}`).join('\n')
+    : '\nNo steps yet.';
+  const goalText = `GOAL: ${goal}${hist}\n\nCurrent page:\n${pageText}\n\nNext single action?`;
+
+  const userContent = screenshotUrl
+    ? [
+        { type: 'image_url', image_url: { url: screenshotUrl, detail: 'high' } },
+        { type: 'text', text: goalText },
+      ]
+    : goalText;
+
+  const raw = await callOpenAI(
+    [{ role: 'system', content: AGENT_PROMPT }, { role: 'user', content: userContent }],
+    { maxTokens: 512, json: true }
+  );
+  return JSON.parse(raw);
+}
+
+// ── Tab helpers ───────────────────────────────────────────────────────────────
+async function getActiveTabId() {
+  const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
+  return tabs[0]?.id ?? null;
+}
+
+async function ensureContentScript(tabId) {
+  try {
+    await chrome.tabs.sendMessage(tabId, { type: 'PING' });
+  } catch {
+    await chrome.scripting.executeScript({ target: { tabId }, files: ['content.js'] })
+      .catch(() => {});
+    await new Promise(r => setTimeout(r, 300));
+  }
+}
+
+async function waitForTabLoad(tabId, timeout = 20000) {
+  return new Promise(resolve => {
+    const listener = (id, info) => {
+      if (id === tabId && info.status === 'complete') {
+        chrome.tabs.onUpdated.removeListener(listener);
+        clearTimeout(timer);
+        setTimeout(resolve, 600); // let JS settle
+      }
+    };
+    chrome.tabs.onUpdated.addListener(listener);
+    const timer = setTimeout(() => {
+      chrome.tabs.onUpdated.removeListener(listener);
+      resolve();
+    }, timeout);
+  });
+}
+
+async function getSnapshot(tabId) {
+  await ensureContentScript(tabId);
+  return chrome.tabs.sendMessage(tabId, { type: 'GET_SNAPSHOT' });
+}
+
+async function takeScreenshot() {
+  try {
+    return await chrome.tabs.captureVisibleTab(null, { format: 'jpeg', quality: 50 });
+  } catch {
+    return null;
+  }
+}
+
+async function sendAction(tabId, action) {
+  await ensureContentScript(tabId);
+  return chrome.tabs.sendMessage(tabId, { type: 'EXECUTE_ACTION', ...action });
+}
+
+// ── Agent loop ────────────────────────────────────────────────────────────────
+async function runAgentLoop(tabId, goal, onStep) {
+  const history = [];
+  const MAX = 25;
+
+  for (let step = 1; step <= MAX; step++) {
+    onStep({ type: 'step', text: `Step ${step}: reading page…` });
+    await new Promise(r => setTimeout(r, 400));
+
+    // Snapshot
+    let snapshot;
+    try {
+      snapshot = await getSnapshot(tabId);
+    } catch (err) {
+      return { success: false, message: `Cannot read page: ${err.message}` };
+    }
+
+    // Screenshot
+    const screenshot = await takeScreenshot();
+
+    // GPT
+    onStep({ type: 'step', text: `Step ${step}: thinking…` });
+    let action;
+    try {
+      action = await getNextStep(goal, snapshot.text, screenshot, history);
+    } catch (err) {
+      return { success: false, message: `GPT error: ${err.message}` };
+    }
+
+    const desc = action.description || action.action;
+    onStep({ type: 'step', text: `Step ${step}: ${desc}` });
+
+    if (action.action === 'done')   return { success: true,  message: action.message };
+    if (action.action === 'failed') return { success: false, message: action.message };
+
+    // Navigate: use chrome.tabs.update (content script can't navigate cross-origin)
+    if (action.action === 'navigate') {
+      await chrome.tabs.update(tabId, { url: action.url });
+      await waitForTabLoad(tabId);
+      history.push(`navigate to ${action.url}`);
+      continue;
+    }
+
+    // All other actions → content script
+    let result = { success: false, message: 'no response' };
+    try {
+      result = await sendAction(tabId, action);
+    } catch (err) {
+      result = { success: false, message: err.message };
+    }
+
+    history.push(`${desc}: ${result?.message || '?'}`);
+    await new Promise(r => setTimeout(r, 600));
+
+    // Check if page is now loading (action triggered navigation)
+    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+    if (tab?.status === 'loading') {
+      onStep({ type: 'step', text: `Step ${step}: waiting for page…` });
+      await waitForTabLoad(tab.id);
+    }
+  }
+
+  return { success: false, message: 'Max steps reached without completing goal.' };
+}
+
+// ── Top-level command runner ──────────────────────────────────────────────────
+const _cmdHistory = [];
+function pushHistory(t) { _cmdHistory.push(t); if (_cmdHistory.length > 5) _cmdHistory.shift(); }
+function getContext()    { return _cmdHistory.slice(-3).map((c, i) => `${i+1}. "${c}"`).join('\n'); }
+
+async function runCommand(text, onStep) {
+  const norm   = normalizeText(text.trim());
+  const ctx    = getContext();
+  pushHistory(norm);
+
+  onStep({ type: 'step', text: `Parsing: "${norm}"` });
+
+  const intent = await parseIntent(norm, ctx);
+  onStep({ type: 'step', text: `Intent: ${intent.action}` });
+
+  const tabId = await getActiveTabId();
+  if (!tabId) return { success: false, message: 'No active browser tab.' };
+
+  switch (intent.action) {
+    case 'navigate': {
+      await chrome.tabs.update(tabId, { url: intent.params.url });
+      await waitForTabLoad(tabId);
+      return { success: true, message: `Navigated to ${intent.params.url}` };
+    }
+
+    case 'scroll_act': {
+      const dir = intent.params.direction || 'down';
+      await sendAction(tabId, { action: 'scroll', direction: dir, amount: 400 });
+      return { success: true, message: `Scrolled ${dir}` };
+    }
+
+    case 'media_act': {
+      const op = intent.params.operation || 'toggle';
+      const scripts = {
+        pause:       `document.querySelectorAll('video,audio').forEach(v=>v.pause())`,
+        play:        `document.querySelectorAll('video,audio').forEach(v=>v.play())`,
+        toggle:      `document.querySelectorAll('video,audio').forEach(v=>v.paused?v.play():v.pause())`,
+        mute:        `document.querySelectorAll('video,audio').forEach(v=>v.muted=true)`,
+        unmute:      `document.querySelectorAll('video,audio').forEach(v=>v.muted=false)`,
+        volume_up:   `document.querySelectorAll('video,audio').forEach(v=>v.volume=Math.min(1,v.volume+0.1))`,
+        volume_down: `document.querySelectorAll('video,audio').forEach(v=>v.volume=Math.max(0,v.volume-0.1))`,
+      };
+      if (scripts[op]) await sendAction(tabId, { action: 'evaluate', script: scripts[op] });
+      return { success: true, message: `Media: ${op}` };
+    }
+
+    case 'fill_input':
+      return runAgentLoop(tabId,
+        `Fill the ${intent.params.field} field with "${intent.params.value}"`, onStep);
+
+    default:
+      return runAgentLoop(tabId, intent.params?.command || norm, onStep);
+  }
+}
+
+// ── UI logic ──────────────────────────────────────────────────────────────────
+const micBtn      = document.getElementById('micBtn');
+const micIcon     = document.getElementById('micIcon');
+const micLabel    = document.getElementById('micLabel');
+const statusDot   = document.getElementById('statusDot');
+const statusText  = document.getElementById('statusText');
+const transcriptEl= document.getElementById('transcriptEl');
+const stepsArea   = document.getElementById('stepsArea');
+const textInput   = document.getElementById('textInput');
+const sendBtn     = document.getElementById('sendBtn');
+const apiWarning  = document.getElementById('apiWarning');
+const settingsBtn = document.getElementById('settingsBtn');
+
+function setStatus(state, text) {
+  statusDot.className = `status-dot ${state}`;
+  statusText.textContent = text;
+}
+
+function addStep(text, type = 'active') {
+  // Remove 'active' class from previous last step
+  const prev = stepsArea.querySelector('.step-item.active');
+  if (prev) prev.classList.replace('active', 'done');
+
+  const el = document.createElement('div');
+  el.className = `step-item ${type}`;
+  const icon = type === 'success' ? '✓' : type === 'error' ? '✗' : '→';
+  el.innerHTML = `<span class="step-icon">${icon}</span>${text}`;
+  stepsArea.appendChild(el);
+  stepsArea.scrollTop = stepsArea.scrollHeight;
+  return el;
+}
+
+function clearSteps() { stepsArea.innerHTML = ''; }
+
+let _lastStepEl = null;
+
+function onStep(info) {
+  if (_lastStepEl) _lastStepEl.classList.remove('active');
+  _lastStepEl = addStep(info.text, 'active');
+}
+
+async function submitCommand(text) {
+  if (!text.trim()) return;
+  clearSteps();
+  transcriptEl.textContent = text;
+  transcriptEl.className = 'transcript-text';
+  setStatus('running', 'Running…');
+  micBtn.classList.add('disabled');
+  micBtn.disabled = true;
+
+  try {
+    const result = await runCommand(text, onStep);
+    if (_lastStepEl) {
+      _lastStepEl.classList.remove('active');
+      _lastStepEl.classList.add(result.success ? 'success' : 'error');
+    }
+    addStep(result.message || (result.success ? 'Done.' : 'Failed.'),
+      result.success ? 'success' : 'error');
+    setStatus('ready', result.success ? 'Ready' : 'Failed');
+  } catch (err) {
+    addStep(`Error: ${err.message}`, 'error');
+    setStatus('error', 'Error');
+  } finally {
+    micBtn.classList.remove('disabled');
+    micBtn.disabled = false;
+  }
+}
+
+// ── Voice recording with MediaRecorder + Whisper ──────────────────────────────
+let mediaRecorder = null;
+let audioChunks   = [];
+let isRecording   = false;
+
+async function startRecording() {
+  const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+  const mimeType = MediaRecorder.isTypeSupported('audio/webm;codecs=opus')
+    ? 'audio/webm;codecs=opus' : 'audio/webm';
+  mediaRecorder = new MediaRecorder(stream, { mimeType });
+  audioChunks   = [];
+  mediaRecorder.ondataavailable = e => { if (e.data.size > 0) audioChunks.push(e.data); };
+  mediaRecorder.start();
+  isRecording = true;
+}
+
+async function stopRecordingAndTranscribe() {
+  return new Promise(resolve => {
+    if (!mediaRecorder) { resolve(''); return; }
+    mediaRecorder.onstop = async () => {
+      const blob = new Blob(audioChunks, { type: 'audio/webm' });
+      mediaRecorder.stream.getTracks().forEach(t => t.stop());
+      mediaRecorder = null;
+      isRecording   = false;
+      try {
+        const text = await transcribeAudio(blob);
+        resolve(text);
+      } catch (err) {
+        resolve('');
+        addStep(`Transcription error: ${err.message}`, 'error');
+      }
+    };
+    mediaRecorder.stop();
+  });
+}
+
+// Hold to record
+micBtn.addEventListener('mousedown', async () => {
+  if (micBtn.disabled) return;
+  try {
+    await startRecording();
+    micBtn.classList.add('listening');
+    micIcon.textContent  = '⏹';
+    micLabel.textContent = 'Release to send';
+    setStatus('running', 'Listening…');
+    transcriptEl.textContent  = '…';
+    transcriptEl.className    = 'transcript-text interim';
+  } catch (err) {
+    addStep(`Mic error: ${err.message}`, 'error');
+  }
+});
+
+micBtn.addEventListener('mouseup', async () => {
+  if (!isRecording) return;
+  micBtn.classList.remove('listening');
+  micIcon.textContent  = '🎤';
+  micLabel.textContent = 'Hold to speak';
+  setStatus('running', 'Transcribing…');
+
+  const text = await stopRecordingAndTranscribe();
+  if (text) {
+    await submitCommand(text);
+  } else {
+    setStatus('ready', 'Ready');
+    transcriptEl.textContent = '—';
+    transcriptEl.className   = 'transcript-text';
+  }
+});
+
+// Touch support
+micBtn.addEventListener('touchstart', e => { e.preventDefault(); micBtn.dispatchEvent(new MouseEvent('mousedown')); });
+micBtn.addEventListener('touchend',   e => { e.preventDefault(); micBtn.dispatchEvent(new MouseEvent('mouseup')); });
+
+// Text input
+sendBtn.addEventListener('click', () => {
+  const t = textInput.value.trim();
+  if (t) { textInput.value = ''; submitCommand(t); }
+});
+textInput.addEventListener('keydown', e => {
+  if (e.key === 'Enter') sendBtn.click();
+});
+
+// Settings
+settingsBtn.addEventListener('click', () => chrome.runtime.openOptionsPage());
+document.getElementById('openOptionsLink')?.addEventListener('click', () => chrome.runtime.openOptionsPage());
+
+// ── Init ──────────────────────────────────────────────────────────────────────
+async function init() {
+  const key = await getApiKey();
+  if (!key) {
+    apiWarning.style.display = 'block';
+    setStatus('error', 'API key missing — click ⚙️');
+  } else {
+    apiWarning.style.display = 'none';
+    setStatus('ready', 'Ready');
+  }
+}
+
+init();
