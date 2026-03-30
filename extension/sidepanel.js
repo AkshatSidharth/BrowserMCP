@@ -31,7 +31,9 @@ async function callOpenAI(messages, { model = 'gpt-5.1', maxTokens = 512, json =
   const apiKey = await getApiKey();
   if (!apiKey) throw new Error('No API key. Click ⚙️ Settings to add your OpenAI key.');
 
-  const body = { model, messages, max_tokens: maxTokens, temperature: 0 };
+  // Newer models (gpt-5.x, o-series) use max_completion_tokens; older use max_tokens
+  const isNewModel = /^(gpt-5|o\d)/.test(model);
+  const body = { model, messages, [isNewModel ? 'max_completion_tokens' : 'max_tokens']: maxTokens, temperature: 0 };
   if (json) body.response_format = { type: 'json_object' };
 
   const resp = await fetch('https://api.openai.com/v1/chat/completions', {
