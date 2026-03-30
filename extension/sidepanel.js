@@ -300,7 +300,7 @@ async function getNextStep(goal, pageText, screenshotUrl, history) {
 
   const raw = await callOpenAI(
     [{ role: 'system', content: AGENT_PROMPT }, { role: 'user', content: userContent }],
-    { maxTokens: 512, json: true }
+    { maxTokens: 800, json: true }
   );
   return JSON.parse(raw);
 }
@@ -396,12 +396,15 @@ async function quickClick(tabId, target, onStep) {
 // ── Agent loop ────────────────────────────────────────────────────────────────
 let _abortLoop = false;
 
-async function runAgentLoop(tabId, goal, onStep) {
+// opts.injectText: if set, agent fill actions with value "INJECT_PROMPT" get replaced
+// with this text — bypasses GPT token limits for long prompt injection
+async function runAgentLoop(tabId, goal, onStep, opts = {}) {
   _abortLoop = false;
   const history = [];
   const MAX = 25;
   let prevSnapshotSig = '';
   let sameSnapshotCount = 0;
+  let promptInjected = false;
 
   for (let step = 1; step <= MAX; step++) {
     if (_abortLoop) return { success: false, message: 'Stopped by user.' };
@@ -452,9 +455,54 @@ async function runAgentLoop(tabId, goal, onStep) {
     const desc = action.description || action.action;
     onStep({ type: 'step', text: `Step ${step}: ${desc}` });
 
+    // Narrate what the agent is about to do
+    speak(desc);
+
     if (action.action === 'done')   { speak(action.message || 'Done.'); return { success: true,  message: action.message }; }
     if (action.action === 'failed') { speak(action.message || 'I ran into an issue.'); return { success: false, message: action.message }; }
     if (action.action === 'ask')    { speak(action.question || 'What should I do next?'); return { success: false, message: `Agent asks: ${action.question}` }; }
+
+    // Prompt injection: replace placeholder value with full generated text (bypasses GPT token limits)
+    if (opts.injectText && action.action === 'fill' &&
+        typeof action.value === 'string' && action.value.includes('INJECT_PROMPT')) {
+      action = { ...action, value: opts.injectText };
+    }
+
+    // Direct textarea injection: if on builder page and textarea still empty after a fill attempt, inject directly
+    if (opts.injectText && !promptInjected && action.action === 'fill') {
+      const [curTab] = await chrome.tabs.query({ active: true, currentWindow: true });
+      if (curTab?.url?.includes('/aiagents/') && curTab?.url?.includes('/voice/')) {
+        const injectResult = await sendAction(tabId, {
+          action: 'evaluate',
+          script: `
+            const ta = document.querySelector('textarea[placeholder*="train"], textarea[class*="prompt"], .agent-prompt textarea, textarea');
+            if (ta) {
+              const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')?.set;
+              if (setter) setter.call(ta, ${JSON.stringify(opts.injectText)});
+              else ta.value = ${JSON.stringify(opts.injectText)};
+              ta.dispatchEvent(new Event('input', {bubbles:true}));
+              ta.dispatchEvent(new Event('change', {bubbles:true}));
+              'injected ' + ta.value.length + ' chars';
+            } else 'textarea not found'
+          `
+        });
+        if (injectResult?.message?.startsWith('injected')) {
+          promptInjected = true;
+          history.push(`Injected prompt (${opts.injectText.length} chars) directly into textarea||fill:prompt`);
+          onStep({ type: 'step', text: `Prompt injected (${opts.injectText.length} chars). Clicking Save…` });
+          speak('Prompt filled. Now saving.');
+          await new Promise(r => setTimeout(r, 600));
+          // Click Save & update
+          await sendAction(tabId, { action: 'evaluate', script: `
+            const btns = [...document.querySelectorAll('button')];
+            const save = btns.find(b => b.textContent.includes('Save'));
+            if (save) { save.click(); 'saved'; } else 'save btn not found'
+          `});
+          await new Promise(r => setTimeout(r, 1500));
+          return { success: true, message: 'Voice agent created with full prompt and saved.' };
+        }
+      }
+    }
 
     // Action key (stable — not description which GPT varies every turn)
     const actionKey = `${action.action}:${action.index ?? `${action.x ?? ''},${action.y ?? ''}`}`;
@@ -559,23 +607,20 @@ async function runCommand(text, onStep) {
       } catch (e) {
         generatedPrompt = `You are ${name || 'a voice assistant'} for ${company || 'the company'}. ${purpose || 'Help users with their queries.'}`;
       }
-      // Encode the generated prompt into the goal so the agent loop fills it verbatim
-      const goal = `Create a new Kapture voice agent with these details:
-Agent Name: "${name || 'Voice Assistant'}"
-Industry: "${industry || 'From Scratch'}"
-Agent Type: Single
-Purpose: "${purpose || 'Voice assistant'}"
+      // Use INJECT_PROMPT marker — full text injected via opts.injectText (bypasses GPT 512 token limit)
+      const agentName = name || 'Voice Assistant';
+      const agentIndustry = industry || 'From Scratch';
+      const agentPurpose = purpose || 'voice assistant for customer support';
+      const goal = `Create a new Kapture voice agent:
+Agent Name: "${agentName}", Industry: "${agentIndustry}", Type: Single, Purpose: "${agentPurpose}"
 
 Steps:
-1. Go to AI Agents page → click "Create New".
-2. PAGE 1: Click the "${industry || 'From Scratch'}" industry card.
-3. PAGE 2: Fill Agent Name with "${name || 'Voice Assistant'}", keep Single selected, fill Purpose textarea with "${purpose || 'Voice assistant'}", click "Start Building".
-4. PAGE 3 (Model tab): Select "Chat GPT" LLM model card. Then click the Agent Prompts textarea and fill it with this EXACT prompt text (copy verbatim, do not shorten):
-
-${generatedPrompt}
-
+1. Go to AI Agents page → click "Create New" button.
+2. PAGE 1 (industry cards): Click the "${agentIndustry}" card. Wait for page to advance automatically.
+3. PAGE 2 (agent details): Fill Agent Name with "${agentName}". Keep Single selected. Fill Purpose textarea with "${agentPurpose}". Click "Start Building".
+4. PAGE 3 (Model tab): Click "Chat GPT" LLM model card. Click the Agent Prompts textarea → fill with value "INJECT_PROMPT".
 5. Click "Save & update". Return done when saved.`;
-      return runAgentLoop(tabId, goal, onStep);
+      return runAgentLoop(tabId, goal, onStep, { injectText: generatedPrompt });
     }
 
     case 'click_element': {
