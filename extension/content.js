@@ -124,24 +124,44 @@ function buildSnapshot() {
   ].join(',');
 
   const seen = new WeakSet();
-  for (const el of queryShadowAll(document, SELECTORS)) {
-    if (seen.has(el)) continue;
+
+  function addEl(el) {
+    if (seen.has(el)) return;
     seen.add(el);
     const rect = el.getBoundingClientRect();
-    if (!rect.width || !rect.height) continue;
+    if (!rect.width || !rect.height) return;
     const cx = Math.round(rect.left + rect.width  / 2);
     const cy = Math.round(rect.top  + rect.height / 2);
-    if (cx < -MARGIN || cy < -MARGIN || cx > vw + MARGIN || cy > vh + MARGIN) continue;
-
-    const role  = getRole(el);
-    const name  = getAccessibleName(el);
-    if (!name) continue;
-
+    if (cx < -MARGIN || cy < -MARGIN || cx > vw + MARGIN || cy > vh + MARGIN) return;
+    const role = getRole(el);
+    const name = getAccessibleName(el);
+    if (!name) return;
     const key = `${role}::${name.toLowerCase()}`;
     nameCount[key] = (nameCount[key] || 0) + 1;
     _els.push({ role, name, state: getState(el), value: getValue(el),
       type: isCustomDropdown(el) ? 'react-select' : undefined,
       cx, cy, _el: el });
+  }
+
+  // Pass 1: standard interactive elements
+  for (const el of queryShadowAll(document, SELECTORS)) addEl(el);
+
+  // Pass 2: clickable card divs/spans — elements with cursor:pointer that look
+  // like buttons/cards but have no semantic role (common in React component UIs)
+  for (const el of document.querySelectorAll('div,span,li,td,p')) {
+    if (seen.has(el)) continue;
+    try {
+      const style = getComputedStyle(el);
+      if (style.cursor !== 'pointer') continue;
+      if (style.display === 'none' || style.visibility === 'hidden') continue;
+    } catch { continue; }
+    const rect = el.getBoundingClientRect();
+    if (!rect.width || !rect.height) continue;
+    // Skip large containers (likely wrappers, not cards)
+    if (rect.width > vw * 0.8 || rect.height > 200) continue;
+    const name = getAccessibleName(el);
+    if (!name || name.length < 2) continue;
+    addEl(el);
   }
 
   // Apply nth suffixes
