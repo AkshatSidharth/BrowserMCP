@@ -326,26 +326,77 @@ async function extractPageContext(page) {
   // 5. Enrich with coordinates via locator.boundingBox()
   elements = await enrichWithCoords(page, elements);
 
-  // 6. Drop off-screen elements (no coords) and re-index
+  // 6. Drop off-screen elements and re-index
   elements = elements
     .filter(e => !e._offscreen && (e.cx != null || e._fromDom))
     .map((e, i) => ({ ...e, index: i }));
 
+  // 7. Deduplicate names — disambiguate identical role+name pairs (openclaw nth-numbering)
+  //    e.g. two "LOGIN" buttons become "LOGIN [1]" and "LOGIN [2]"
+  const nameCount = {};
+  const nameSeen  = {};
+  for (const e of elements) {
+    const key = `${e.role}::${e.name.toLowerCase()}`;
+    nameCount[key] = (nameCount[key] || 0) + 1;
+  }
+  for (const e of elements) {
+    const key = `${e.role}::${e.name.toLowerCase()}`;
+    if (nameCount[key] > 1) {
+      nameSeen[key] = (nameSeen[key] || 0) + 1;
+      e.name = `${e.name} [${nameSeen[key]}]`;
+    }
+  }
+
   return { url, title, elements };
 }
 
+// ─── Incremental snapshot diff ───────────────────────────────────────────────
+// Store previous snapshot per page URL so we can emit an incremental diff.
+// Inspired by openclaw's _snapshotForAI() { full, incremental } pattern.
+// Reduces tokens on subsequent steps when most of the page hasn't changed.
+
+const _prevSnapshot = new Map(); // url → formatted string
+
+function diffSnapshot(url, current) {
+  const prev = _prevSnapshot.get(url) || '';
+  _prevSnapshot.set(url, current);
+  if (!prev) return null; // first time — no diff
+
+  const prevLines = new Set(prev.split('\n'));
+  const added = current.split('\n').filter(l => l.trim() && !prevLines.has(l));
+  if (!added.length) return null; // nothing changed
+  if (added.length > 15) return null; // too many changes — just use full
+  return added.join('\n');
+}
+
 // ─── Formatter ────────────────────────────────────────────────────────────────
-function formatContext(ctx) {
+const MAX_SNAPSHOT_CHARS = 6000; // cap to avoid blowing context window
+
+function formatContext(ctx, { incremental = false } = {}) {
   const lines = ctx.elements.map(e => {
-    const coord   = (e.cx != null && e.cy != null) ? `  @(${e.cx},${e.cy})` : '';
-    const val     = e.value ? `  val:"${e.value}"` : '';
-    const tag     = e.type  ? `  [${e.type}]`      : '';
+    const coord = (e.cx != null && e.cy != null) ? `  @(${e.cx},${e.cy})` : '';
+    const val   = e.value ? `  val:"${e.value}"` : '';
+    const tag   = e.type  ? `  [${e.type}]`      : '';
     return `  [${e.index}] ${e.state || '·'} ${e.role}  "${e.name}"${val}${tag}${coord}`;
   }).join('\n');
 
-  return `Page: ${ctx.title}\nURL: ${ctx.url}\n\n` +
+  const full = `Page: ${ctx.title}\nURL: ${ctx.url}\n\n` +
     `Interactive elements  [idx] state role "name" val [type] @coords:\n` +
     (lines || '  (none found)');
+
+  // Truncate if too large
+  const capped = full.length > MAX_SNAPSHOT_CHARS
+    ? full.slice(0, MAX_SNAPSHOT_CHARS) + '\n  ... (truncated)'
+    : full;
+
+  if (!incremental) return capped;
+
+  // Try to return only changed lines (saves tokens on step 2+)
+  const diff = diffSnapshot(ctx.url, capped);
+  if (diff) {
+    return `Page: ${ctx.title}\nURL: ${ctx.url}\n\n[CHANGED ELEMENTS ONLY]\n${diff}`;
+  }
+  return capped;
 }
 
 module.exports = { extractPageContext, formatContext };

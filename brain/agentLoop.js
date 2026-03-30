@@ -585,7 +585,8 @@ async function runAgentLoop(page, goal, onStep, recentContext = '') {
 
     const urlBefore = activePage.url();
     const ctx = await extractPageContext(activePage);
-    const domText = formatContext(ctx);
+    // Use incremental diff on step 2+ to reduce token usage (openclaw pattern)
+    const domText = formatContext(ctx, { incremental: stepCount > 1 });
     const base64  = await cdpScreenshot(activePage);
     if (!base64) logger.warn(`Step ${stepCount}: no screenshot, DOM-only mode`);
 
