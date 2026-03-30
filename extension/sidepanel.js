@@ -228,6 +228,7 @@ press      {"action":"press","key":"Tab","description":"..."}
 type       {"action":"type","text":"...","description":"..."}
 hover_xy   {"action":"hover_xy","x":N,"y":N,"description":"..."}
 evaluate   {"action":"evaluate","script":"JS code returning string","description":"..."}
+fill_otp   {"action":"fill_otp","value":"123456","description":"Fill OTP digits"}
 navigate   {"action":"navigate","url":"https://...","description":"..."}
 wait       {"action":"wait","ms":1500,"description":"..."}
 done       {"action":"done","message":"what was accomplished"}
@@ -257,7 +258,7 @@ E-COMMERCE — PRODUCT + CART:
 LOGIN FLOWS:
 13. Email/username field: fill → Tab or press_on Enter → password field: fill → click Login/Sign In/Submit.
 14. Google Sign-In popup: click the Google account shown in the popup.
-15. OTP fields: fill the entire OTP if single field; click individual boxes if separate.
+15. OTP fields: ALWAYS use fill_otp action with the full OTP digits as value — it handles both single-input and multi-box OTP automatically. Never try to fill individual OTP boxes one by one.
 16. "Stay signed in" / "Remember me" dialogs: click Yes/Continue.
 
 NAVIGATION + MENUS:

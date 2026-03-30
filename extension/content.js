@@ -302,6 +302,42 @@ async function executeAction(msg) {
         return { success: true, message: `Filled "${_els[index]?.name}" with "${value}"` };
       }
 
+      case 'fill_otp': {
+        // Handle OTP fields — either a single input or N separate single-digit boxes
+        const digits = String(value).replace(/\D/g, '');
+        // Find all OTP-like inputs: maxlength=1 or type=tel/number near each other
+        const otpInputs = Array.from(document.querySelectorAll(
+          'input[maxlength="1"], input[data-index], input.otp, input[autocomplete="one-time-code"]'
+        )).filter(el => {
+          const r = el.getBoundingClientRect();
+          return r.width > 0 && r.height > 0;
+        });
+
+        if (otpInputs.length >= 2) {
+          // Separate boxes — fill each digit into its box
+          for (let i = 0; i < Math.min(digits.length, otpInputs.length); i++) {
+            const box = otpInputs[i];
+            box.focus();
+            nativeFill(box, digits[i]);
+            box.dispatchEvent(new InputEvent('input', { bubbles: true, data: digits[i] }));
+            box.dispatchEvent(new KeyboardEvent('keydown', { key: digits[i], bubbles: true }));
+            box.dispatchEvent(new KeyboardEvent('keyup',  { key: digits[i], bubbles: true }));
+            await new Promise(r => setTimeout(r, 60));
+          }
+          return { success: true, message: `Filled OTP "${digits}" across ${otpInputs.length} boxes` };
+        }
+
+        // Single OTP input (autocomplete="one-time-code" style)
+        const single = otpInputs[0] || document.querySelector('input[type="number"],input[type="tel"],input[type="text"]');
+        if (single) {
+          single.focus();
+          nativeFill(single, digits);
+          single.dispatchEvent(new InputEvent('input', { bubbles: true }));
+          return { success: true, message: `Filled OTP "${digits}" into single input` };
+        }
+        return { success: false, message: 'No OTP input found' };
+      }
+
       case 'select': {
         const el = getEl(index);
         if (!el || el.tagName !== 'SELECT')
