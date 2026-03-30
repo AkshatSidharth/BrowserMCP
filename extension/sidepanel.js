@@ -105,47 +105,71 @@ async function parseIntent(text, context = '') {
 
 // ── Agent system prompt ───────────────────────────────────────────────────────
 const AGENT_PROMPT = `
-You are an autonomous browser agent. You see a screenshot + interactive elements list.
-Each element: [index] state role "name" val [type] @(cx,cy)
-[react-select] = custom searchable dropdown. To use: click it → type to search → click option. NEVER use "select" action on it.
+You are an autonomous browser agent controlling a real Chrome browser via voice commands.
+You see: a screenshot of the current page + a list of interactive elements.
+Element format: [idx] state role "name" val:"value" [type] @(cx,cy)
+[react-select] = custom searchable dropdown — never use "select" action on it.
 
-Return ONE JSON action per turn. Return ONLY valid JSON.
+Return ONE JSON action per turn. Return ONLY valid JSON, no markdown, no explanation.
 
-Actions:
-click       → {"action":"click","index":N,"description":"..."}
-fill        → {"action":"fill","index":N,"value":"...","description":"..."}
-press_on    → {"action":"press_on","index":N,"key":"Enter","description":"..."}
-click_xy    → {"action":"click_xy","x":N,"y":N,"description":"..."}
-scroll      → {"action":"scroll","direction":"down","amount":300,"description":"..."}
-scroll_xy   → {"action":"scroll_xy","x":N,"y":N,"direction":"down","amount":300,"description":"..."}
-select      → {"action":"select","index":N,"value":"option text","description":"..."}
-press       → {"action":"press","key":"Enter","description":"..."}
-type        → {"action":"type","text":"...","description":"..."}
-hover_xy    → {"action":"hover_xy","x":N,"y":N,"description":"..."}
-drag_xy     → {"action":"drag_xy","x1":N,"y1":N,"x2":N,"y2":N,"description":"..."}
-evaluate    → {"action":"evaluate","script":"document.title","description":"..."}
-navigate    → {"action":"navigate","url":"https://...","description":"..."}
-wait        → {"action":"wait","ms":1000,"description":"..."}
-done        → {"action":"done","message":"..."}
-failed      → {"action":"failed","message":"..."}
+ACTIONS:
+click      {"action":"click","index":N,"description":"..."}
+fill       {"action":"fill","index":N,"value":"text","description":"..."}
+press_on   {"action":"press_on","index":N,"key":"Enter","description":"..."}
+click_xy   {"action":"click_xy","x":N,"y":N,"description":"..."}
+scroll     {"action":"scroll","direction":"down","amount":400,"description":"..."}
+scroll_xy  {"action":"scroll_xy","x":N,"y":N,"direction":"down","amount":300,"description":"..."}
+select     {"action":"select","index":N,"value":"option text","description":"..."}
+press      {"action":"press","key":"Tab","description":"..."}
+type       {"action":"type","text":"...","description":"..."}
+hover_xy   {"action":"hover_xy","x":N,"y":N,"description":"..."}
+evaluate   {"action":"evaluate","script":"JS code returning string","description":"..."}
+navigate   {"action":"navigate","url":"https://...","description":"..."}
+wait       {"action":"wait","ms":1500,"description":"..."}
+done       {"action":"done","message":"what was accomplished"}
+failed     {"action":"failed","message":"why it failed"}
 
-Rules:
-1. Always check screenshot first to identify page state.
-2. Dismiss cookie banners / popups before anything else.
-3. SEARCH BARS: fill input → press_on same index with Enter.
-4. REACT SELECT dropdowns: click → type to filter → click option. Never use "select".
-5. PRICE FILTERS: use evaluate to detect type (input[type=range] / select / text input / custom div), then appropriate method.
-6. KAPTURE PARTNER LOGIN (adjetter.com / kapturecrm.com):
-   a) Login page → click Sign in with Google
-   b) Home page → click LOGIN TO PARTNER EMPLOYEE
-   c) Partner page → click Select Admin Server (top-right) → choose server
-   d) SELECT DOMAIN section → click Domain Name react-select → type client → pick match
-   e) EMPLOYEE LOGIN section → click Select Employee react-select → pick employee
-   f) REMARKS → fill 5+ words
-   g) Click Submit → success when on *.kapturecrm.com/app/workspace
-7. After completing goal return done immediately. Do not repeat already-done actions.
-8. Be decisive — voice assistant, user cannot type. Use context or focus field and say ready.
-9. NEVER ask user for values. If value not in goal/context, focus field and return done("ready").
+GENERAL RULES:
+1. Study the screenshot first. Use click_xy for elements visible in screenshot but absent from the elements list.
+2. Dismiss modals / cookie banners / overlays FIRST (Escape or click close/accept/continue button).
+3. If goal is already done (item in cart, page loaded, form submitted), return done immediately.
+4. Never repeat the same failed action twice. Try click_xy fallback using @(cx,cy) coordinates.
+5. Never ask the user for values. If a value is unknown, use what makes sense from context.
+
+SEARCH BARS (Google, Amazon, Flipkart, Myntra, etc.):
+6. Find the main search input (large text box near the top). Fill it with the query, then press_on the same index with key "Enter".
+7. Wait for results, then click the most relevant product result.
+
+E-COMMERCE — PRODUCT + CART:
+8. After search results load, click the first / most relevant product to open its page.
+9. On product page: select size/colour/variant if required before adding to cart.
+10. Click "Add to Cart" / "Add to Bag" / "Add to Wishlist" / "Buy Now" button. Confirm via cart badge change or success toast.
+11. After adding: if asked to checkout, click "Go to Cart" → "Proceed to Checkout" → fill address/payment if needed.
+12. Price filters: evaluate DOM to find input[type=range], select, or text inputs — use appropriate method.
+
+LOGIN FLOWS:
+13. Email/username field: fill → Tab or press_on Enter → password field: fill → click Login/Sign In/Submit.
+14. Google Sign-In popup: click the Google account shown in the popup.
+15. OTP fields: fill the entire OTP if single field; click individual boxes if separate.
+16. "Stay signed in" / "Remember me" dialogs: click Yes/Continue.
+
+NAVIGATION + MENUS:
+17. Top nav tabs: click directly. If tab not visible, scroll up first.
+18. Hover menus: hover_xy parent item, then click revealed submenu item.
+19. Pagination: click "Next" or page number.
+20. Infinite scroll pages: scroll down 600px to load more items.
+
+REACT SELECT / CUSTOM DROPDOWNS:
+21. Click the control → type search text → click the matching option from the dropdown list.
+
+KAPTURE CRM (adjetter.com / kapturecrm.com):
+22. Login: click Sign in with Google.
+23. Partner login flow: LOGIN TO PARTNER EMPLOYEE → Select Admin Server → Domain Name (react-select: type to search) → Select Employee → Remarks (5+ words) → Submit.
+
+STUCK DETECTION:
+24. If snapshot looks identical to previous step, try scrolling or a different element.
+25. If an element click fails (not found), use click_xy at the element's @(cx,cy) as fallback.
+26. After 3 failed attempts on same step, return failed with a clear reason.
 `.trim();
 
 async function getNextStep(goal, pageText, screenshotUrl, history) {
@@ -208,7 +232,7 @@ async function getSnapshot(tabId) {
 
 async function takeScreenshot() {
   try {
-    return await chrome.tabs.captureVisibleTab(null, { format: 'jpeg', quality: 50 });
+    return await chrome.tabs.captureVisibleTab(null, { format: 'jpeg', quality: 80 });
   } catch {
     return null;
   }
@@ -262,11 +286,15 @@ let _abortLoop = false;
 async function runAgentLoop(tabId, goal, onStep) {
   _abortLoop = false;
   const history = [];
-  const MAX = 20;
+  const MAX = 25;
+  let prevSnapshotSig = '';
+  let sameSnapshotCount = 0;
 
   for (let step = 1; step <= MAX; step++) {
     if (_abortLoop) return { success: false, message: 'Stopped by user.' };
     onStep({ type: 'step', text: `Step ${step}: reading page…` });
+
+    // Brief settle before snapshot
     await new Promise(r => setTimeout(r, 400));
 
     // Snapshot
@@ -274,7 +302,26 @@ async function runAgentLoop(tabId, goal, onStep) {
     try {
       snapshot = await getSnapshot(tabId);
     } catch (err) {
-      return { success: false, message: `Cannot read page: ${err.message}` };
+      // Content script may have been unloaded by navigation — wait and retry once
+      await new Promise(r => setTimeout(r, 1200));
+      try { snapshot = await getSnapshot(tabId); }
+      catch (e2) { return { success: false, message: `Cannot read page: ${e2.message}` }; }
+    }
+
+    // Stuck detection: if snapshot unchanged twice, inject a scroll to shake things loose
+    const sig = snapshot.text.slice(0, 300);
+    if (sig === prevSnapshotSig) {
+      sameSnapshotCount++;
+      if (sameSnapshotCount >= 2) {
+        onStep({ type: 'step', text: `Step ${step}: page unchanged — scrolling to find more…` });
+        await sendAction(tabId, { action: 'scroll', direction: 'down', amount: 500 });
+        await new Promise(r => setTimeout(r, 800));
+        sameSnapshotCount = 0;
+        try { snapshot = await getSnapshot(tabId); } catch {}
+      }
+    } else {
+      sameSnapshotCount = 0;
+      prevSnapshotSig = sig;
     }
 
     // Screenshot
@@ -298,8 +345,10 @@ async function runAgentLoop(tabId, goal, onStep) {
     // Navigate: use chrome.tabs.update (content script can't navigate cross-origin)
     if (action.action === 'navigate') {
       await chrome.tabs.update(tabId, { url: action.url });
+      onStep({ type: 'step', text: `Step ${step}: loading page…` });
       await waitForTabLoad(tabId);
-      history.push(`navigate to ${action.url}`);
+      history.push(`navigate → ${action.url}`);
+      prevSnapshotSig = '';
       continue;
     }
 
@@ -311,19 +360,23 @@ async function runAgentLoop(tabId, goal, onStep) {
       result = { success: false, message: err.message };
     }
 
-    history.push(`${desc}: ${result?.message || '?'}`);
+    history.push(`${desc}: ${result?.success ? 'ok' : result?.message || '?'}`);
     if (_abortLoop) return { success: false, message: 'Stopped by user.' };
-    await new Promise(r => setTimeout(r, 600));
 
-    // Check if page is now loading (action triggered navigation)
+    // Smart wait: fill/click actions that trigger navigation need longer settle
+    const isNavAction = ['click','click_xy','press_on','press','select'].includes(action.action);
+    await new Promise(r => setTimeout(r, isNavAction ? 900 : 400));
+
+    // Check if page is loading after action
     const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
     if (tab?.status === 'loading') {
       onStep({ type: 'step', text: `Step ${step}: waiting for page…` });
       await waitForTabLoad(tab.id);
+      prevSnapshotSig = '';
     }
   }
 
-  return { success: false, message: 'Max steps reached without completing goal.' };
+  return { success: false, message: 'Reached max steps. Goal may be partially complete.' };
 }
 
 // ── Top-level command runner ──────────────────────────────────────────────────

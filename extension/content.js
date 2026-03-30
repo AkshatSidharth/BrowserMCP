@@ -69,10 +69,45 @@ function isCustomDropdown(el) {
   );
 }
 
+// ── Shadow DOM traversal ──────────────────────────────────────────────────────
+function queryShadowAll(root, selector, results = []) {
+  try {
+    for (const el of root.querySelectorAll(selector)) results.push(el);
+    for (const el of root.querySelectorAll('*')) {
+      if (el.shadowRoot) queryShadowAll(el.shadowRoot, selector, results);
+    }
+  } catch {}
+  return results;
+}
+
+// ── Page visible text (for context) ──────────────────────────────────────────
+function getVisibleText() {
+  try {
+    const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT, {
+      acceptNode(node) {
+        const p = node.parentElement;
+        if (!p) return NodeFilter.FILTER_REJECT;
+        const tag = p.tagName;
+        if (['SCRIPT','STYLE','NOSCRIPT','TEMPLATE'].includes(tag)) return NodeFilter.FILTER_REJECT;
+        const style = getComputedStyle(p);
+        if (style.display === 'none' || style.visibility === 'hidden' || style.opacity === '0') return NodeFilter.FILTER_REJECT;
+        return NodeFilter.FILTER_ACCEPT;
+      }
+    });
+    let text = '', node;
+    while ((node = walker.nextNode()) && text.length < 600) {
+      const t = node.textContent.trim();
+      if (t.length > 2) text += t + ' ';
+    }
+    return text.trim().slice(0, 600);
+  } catch { return ''; }
+}
+
 // ── Snapshot builder ──────────────────────────────────────────────────────────
 function buildSnapshot() {
   _els = [];
   const vw = window.innerWidth, vh = window.innerHeight;
+  const MARGIN = 150; // include elements slightly outside viewport
   const nameCount = {}, nameSeen = {};
 
   const SELECTORS = [
@@ -85,23 +120,25 @@ function buildSnapshot() {
     '[role=checkbox]', '[role=radio]', '[role=tab]',
     '[role=option]', '[role=combobox]', '[role=menuitem]',
     '[role=switch]', '[role=link]', '[role=slider]',
+    '[role=listitem] button', '[data-add-to-cart]',
   ].join(',');
 
-  for (const el of document.querySelectorAll(SELECTORS)) {
+  const seen = new WeakSet();
+  for (const el of queryShadowAll(document, SELECTORS)) {
+    if (seen.has(el)) continue;
+    seen.add(el);
     const rect = el.getBoundingClientRect();
     if (!rect.width || !rect.height) continue;
     const cx = Math.round(rect.left + rect.width  / 2);
     const cy = Math.round(rect.top  + rect.height / 2);
-    if (cx < 0 || cy < 0 || cx > vw || cy > vh) continue;
+    if (cx < -MARGIN || cy < -MARGIN || cx > vw + MARGIN || cy > vh + MARGIN) continue;
 
     const role  = getRole(el);
     const name  = getAccessibleName(el);
     if (!name) continue;
 
-    // nth-numbering for duplicate role+name (openclaw pattern)
     const key = `${role}::${name.toLowerCase()}`;
     nameCount[key] = (nameCount[key] || 0) + 1;
-
     _els.push({ role, name, state: getState(el), value: getValue(el),
       type: isCustomDropdown(el) ? 'react-select' : undefined,
       cx, cy, _el: el });
@@ -117,21 +154,21 @@ function buildSnapshot() {
     e.index = _els.indexOf(e);
   }
 
-  // Format text for GPT
-  const MAX_CHARS = 5000;
+  // Format element list
+  const MAX_EL_CHARS = 4500;
   let lines = _els.map(e => {
-    const coord = `  @(${e.cx},${e.cy})`;
-    const val   = e.value ? `  val:"${e.value}"` : '';
-    const tag   = e.type  ? `  [${e.type}]`      : '';
-    return `  [${e.index}] ${e.state || '·'} ${e.role}  "${e.name}"${val}${tag}${coord}`;
+    const val  = e.value ? ` val:"${e.value}"` : '';
+    const tag  = e.type  ? ` [${e.type}]`      : '';
+    return `[${e.index}] ${e.state||'·'} ${e.role} "${e.name}"${val}${tag} @(${e.cx},${e.cy})`;
   }).join('\n');
+  if (lines.length > MAX_EL_CHARS) lines = lines.slice(0, MAX_EL_CHARS) + '\n...(truncated)';
 
-  if (lines.length > MAX_CHARS) lines = lines.slice(0, MAX_CHARS) + '\n  ...(truncated)';
+  const pageText = getVisibleText();
 
   return {
     url:   location.href,
     title: document.title,
-    text:  `Page: ${document.title}\nURL: ${location.href}\n\nInteractive elements:\n${lines || '  (none)'}`,
+    text:  `Page: ${document.title}\nURL: ${location.href}\n${pageText ? `\nVisible text: ${pageText}\n` : ''}\nElements:\n${lines || '(none)'}`,
     count: _els.length,
   };
 }
@@ -184,8 +221,23 @@ async function executeAction(msg) {
     switch (action) {
 
       case 'click': {
-        const el = getEl(index);
-        if (!el) return { success: false, message: `Element [${index}] not found` };
+        let el = getEl(index);
+        if (!el) {
+          // Element stale — try coordinate fallback using stored cx/cy
+          const stored = _els[index];
+          if (stored) {
+            const live = document.elementFromPoint(stored.cx, stored.cy);
+            if (live) {
+              live.focus();
+              ['mousedown','mouseup','click'].forEach(t =>
+                live.dispatchEvent(new MouseEvent(t, { bubbles:true, cancelable:true, clientX: stored.cx, clientY: stored.cy }))
+              );
+              return { success: true, message: `Clicked [${index}] via coordinates (stale fallback)` };
+            }
+          }
+          return { success: false, message: `Element [${index}] not found` };
+        }
+        el.scrollIntoView({ block: 'nearest' });
         el.focus();
         ['mousedown', 'mouseup', 'click'].forEach(t =>
           el.dispatchEvent(new MouseEvent(t, { bubbles: true, cancelable: true }))
@@ -204,15 +256,19 @@ async function executeAction(msg) {
       case 'fill': {
         const el = getEl(index);
         if (!el) return { success: false, message: `Element [${index}] not found` };
+        el.scrollIntoView({ block: 'nearest' });
         // Dismiss overlays first
         fireKey(document.activeElement, 'Escape');
         await new Promise(r => setTimeout(r, 80));
         el.focus();
         el.click();
-        await new Promise(r => setTimeout(r, 50));
+        await new Promise(r => setTimeout(r, 60));
+        // Select-all then type (works for React-controlled inputs too)
+        el.dispatchEvent(new KeyboardEvent('keydown', { key: 'a', ctrlKey: true, bubbles: true }));
         nativeFill(el, '');
         await new Promise(r => setTimeout(r, 30));
         nativeFill(el, String(value));
+        el.dispatchEvent(new InputEvent('input', { bubbles: true, data: String(value) }));
         return { success: true, message: `Filled "${_els[index]?.name}" with "${value}"` };
       }
 
