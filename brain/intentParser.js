@@ -104,14 +104,15 @@ Rules:
 21. PRICE-FILTERED SEARCH — when user says "search for X under/below/less than Y price on Flipkart/Amazon", use smart_act with the natural language command as-is (e.g. "search for AC under 10000 on Flipkart"). The agent will interact with the price filter UI elements directly on the page.
 22. KAPTURE PARTNER LOGIN — when user says "login to X", "X login", "open X", "X ke liye login", "login X" where X is a client/company name (Kotak, Indus, Bigbasket, City Union, Agrim, Wakefit, etc.), OR when user says "Kapture admin login" / "open Kapture admin" without a specific client name:
     - Extract the client name from the phrase. If no client specified, use "".
-    - Map to smart_act with command: "Open Kapture Admin partner login: navigate to https://adjetter.com/admin/home.html. If redirected to login page, click Sign in with Google and complete auth. Once on home page, click LOGIN TO PARTNER EMPLOYEE. On the partner employee page, scroll down to the SELECT DOMAIN section, click the Domain Name dropdown, type '<CLIENT_NAME>' to search, then click the best matching option. Fill the Remarks field with at least 5 words (e.g. 'Logging in for partner support'). Click the LOGIN button. After login, the page navigates to the client Kapture CRM workspace (*.kapturecrm.com/app/workspace) — that is the success state."
-    - Replace <CLIENT_NAME> with the extracted client name.
+    - Extract the server hint too if mentioned (e.g. "in server", "in2", "usa"). Default server = "in".
+    - Map to smart_act with command: "Kapture partner login for <CLIENT_NAME>: 1) Navigate to https://adjetter.com/admin/home.html, sign in with Google if needed. 2) Click LOGIN TO PARTNER EMPLOYEE. 3) On the partner page, FIRST click Select Admin Server (top-right) and choose <SERVER> server. 4) Select Domain Name '<CLIENT_NAME>' using the searchable dropdown. 5) Select Employee from the dropdown. 6) Fill Remarks with 5+ words. 7) Click Submit. Success = landing on *.kapturecrm.com/app/workspace."
+    - Replace <CLIENT_NAME> with extracted name, <SERVER> with server hint (default: https://in.kapturecrm.com).
     - Examples:
-      "login to Kotak" → command with CLIENT_NAME = "Kotak"
-      "login to Indus" → command with CLIENT_NAME = "Indus"
-      "Bigbasket login" → command with CLIENT_NAME = "Bigbasket"
-      "login to City Union Bank" → command with CLIENT_NAME = "City Union Bank"
-      "open Kapture admin" → command with CLIENT_NAME = "" (no search, just open the page)
+      "login to Kotak" → CLIENT_NAME="Kotak", SERVER="https://in.kapturecrm.com"
+      "login to Indus on in2" → CLIENT_NAME="Indus", SERVER="https://in2.kapturecrm.com"
+      "Bigbasket login" → CLIENT_NAME="Bigbasket", SERVER="https://in.kapturecrm.com"
+      "login to City Union Bank" → CLIENT_NAME="City Union Bank", SERVER="https://in.kapturecrm.com"
+      "open Kapture admin" → CLIENT_NAME="", SERVER="https://in.kapturecrm.com"
 
 Output schema:
 { "action": "<action_name>", "params": { ... } }

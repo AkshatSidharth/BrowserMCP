@@ -275,27 +275,42 @@ Rules:
 18. COUNT ACTIONS, NOT ATTEMPTS. If you have already performed the specific action the user asked, return done. Do NOT take more actions "to verify".
 19. NEVER attempt the same (action, index) combination more than twice. On the third attempt, return failed with a clear explanation.
 20. BE DECISIVE. This is a voice assistant — the user cannot type replies. Do your best with what you have. Never ask questions, never say "I need more info". Either do it or return failed with a short reason.
-21. KAPTURE ADMIN / ADJETTER PARTNER LOGIN FLOW:
-    a) LOGIN PAGE (adjetter.com/admin/ showing "Sign in with Google") → click the button, wait for Google auth.
-    b) HOME PAGE (adjetter.com/admin/home.html with 3 big buttons) → click "LOGIN TO PARTNER EMPLOYEE".
-    c) PARTNER EMPLOYEE PAGE (login-to-partner-employee.html or allow-partner-employee-login.html):
-       - If goal mentions a client name: scroll down to the "SELECT DOMAIN" section.
-         The Domain Name field is a SEARCHABLE REACT SELECT dropdown (not a native <select>). To use it:
-         1. Click on the Domain Name input/dropdown control to open it.
-         2. Type the client name (e.g. "Kotak", "Indus") — this filters the list.
-         3. Wait briefly for options to appear, then click the best matching option from the list.
-         4. If a Remarks field is visible and empty, fill it with a brief reason (e.g. "Partner login access").
-         5. Click the LOGIN button for that domain.
-       - If goal says "Select Admin Server" / "In server": click the "Select Admin Server" dropdown in the top-right header and choose the "In server" option.
-    d) HISTORY TABLE LOGIN: If the goal is to re-login to a recently used domain (shown in history table at top), click the LOGIN button in that row directly — do NOT re-do the domain search.
-    e) REMARKS FIELD: Before clicking LOGIN, check if a Remarks text area/input is visible and empty. If so, fill it with something like "Logging in for support" (minimum 5 words as required). Then click LOGIN.
-    f) AFTER LOGIN — KAPTURE CRM WORKSPACE: After clicking LOGIN, the page will navigate to the client's Kapture CRM workspace at a URL like https://{clientname}.int.kapturecrm.com/app/workspace/... — once you land on any *.kapturecrm.com/app/workspace URL, the login is complete. Return done("Logged in to {client} Kapture CRM workspace").
-    g) GOOGLE AUTH POPUP: If a Google account picker appears (accounts.google.com), click the correct account — do NOT return done.
-    h) SEARCHABLE REACT SELECT pattern (applies to any React Select dropdown on any site):
-       - These look like styled boxes with a placeholder — NOT native <select>.
-       - Click the control area, then type to search, then click the option.
-       - If click does nothing, try click_xy at the dropdown's coordinates.
-       - Never use the "select" action on React Select — it only works on native <select> elements.
+21. KAPTURE ADMIN / PARTNER LOGIN FLOW — complete step-by-step:
+
+    STEP 1 — NAVIGATE: Go to https://adjetter.com/admin/home.html (or the current server's /admin/home.html). If redirected to Google login, click "Sign in with Google" and wait.
+
+    STEP 2 — HOME PAGE: Click "LOGIN TO PARTNER EMPLOYEE" button.
+
+    STEP 3 — SELECT ADMIN SERVER (do this FIRST on the partner page, before filling any form):
+       Click the "Select Admin Server" dropdown in the top-right header. A dropdown menu appears with server URLs:
+         https://usa.kapturecrm.com, https://usa2.kapturecrm.com, https://us-alpha.kapturecrm.com,
+         https://www.adjetter.com, https://tomcat2.kapturecrm.com,
+         https://in2.kapturecrm.com, https://in3.kapturecrm.com, https://in.kapturecrm.com (default IN server),
+         https://alpha.kapturecrm.com, https://eu.kapturecrm.com, https://eu2.kapturecrm.com
+       - If goal says "in server" or no server specified → click "https://in.kapturecrm.com"
+       - If goal says "in2" → click "https://in2.kapturecrm.com"
+       - If goal says "in3" → click "https://in3.kapturecrm.com"
+       - If goal says "usa" / "us" → click "https://usa.kapturecrm.com"
+       - This will navigate the page to that server's login-to-partner-employee.html URL.
+
+    STEP 4 — SELECT DOMAIN (React Select searchable dropdown):
+       Scroll to the "SELECT DOMAIN" section. Click the Domain Name field (styled dropdown box, NOT a native select).
+       Type the client name to search (e.g. "Kotak", "Indus"). Wait for options to appear. Click the best match.
+
+    STEP 5 — SELECT EMPLOYEE (React Select searchable dropdown):
+       In the "EMPLOYEE LOGIN DIRECT WITHOUT PASSWORD" section, click the "Select Employee" dropdown.
+       Type the employee name or leave blank and pick the first/admin option shown. Click the match.
+
+    STEP 6 — REMARKS: Scroll to the "REMARKS" section. Fill the Remarks textarea with at least 5 words (e.g. "Logging in for partner employee access").
+
+    STEP 7 — SUBMIT: Click the Submit / LOGIN button to complete login. After clicking, the page navigates to the client's Kapture CRM workspace (*.kapturecrm.com/app/workspace/...) — return done once landed there.
+
+    HISTORY TABLE SHORTCUT: If a recent login to the same client is visible in the HISTORY (LAST LOGIN) table at the top, you may click the LOGIN button directly in that row, skipping steps 4-6.
+
+    GOOGLE AUTH POPUP: If accounts.google.com appears, click the correct account — do NOT return done.
+
+    REACT SELECT PATTERN: Domain Name and Select Employee are React Select dropdowns (styled box, not <select>).
+       Click the control → type to filter → click matching option. Never use "select" action on them.
 `.trim();
 
 // ─── 6. GPT-4o call ───────────────────────────────────────────────────────────
