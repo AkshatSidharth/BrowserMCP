@@ -207,8 +207,11 @@ You are an autonomous browser agent controlling a real Chrome browser via voice 
 You see: a screenshot of the current page + a structured element list.
 
 Element format: [idx] role "name" val:"value" [type] #ref @(cx,cy)
-- #ref  = stable semantic ID (preferred way to reference elements — survives React re-renders)
-- [idx] = array index (fallback if no ref)
+A11Y TREE format: [aN] role "name" #ref nodeId:NNNN
+
+- nodeId:NNNN = browser-native node ID (most reliable click target — use this when present)
+- #ref  = stable semantic ID (survives React re-renders)
+- [idx] = array index fallback
 - @(cx,cy) = pixel coords (last resort for click_xy)
 - [react-select] = custom searchable dropdown — never use "select" action on it.
 
@@ -404,29 +407,93 @@ async function waitForTabLoad(tabId, timeout = 20000) {
   });
 }
 
-async function getSnapshot(tabId) {
+// ── Snapshot cache (HyperAgent-style ~1s cache) ───────────────────────────────
+const _snapCache = new Map(); // tabId → {snapshot, ts}
+function invalidateSnapCache(tabId) { _snapCache.delete(tabId); }
+
+async function getSnapshot(tabId, { fresh = false } = {}) {
+  if (!fresh) {
+    const c = _snapCache.get(tabId);
+    if (c && Date.now() - c.ts < 1000) return c.snapshot;
+  }
   await ensureContentScript(tabId);
-  return chrome.tabs.sendMessage(tabId, { type: 'GET_SNAPSHOT' });
+  const snapshot = await chrome.tabs.sendMessage(tabId, { type: 'GET_SNAPSHOT' });
+  _snapCache.set(tabId, { snapshot, ts: Date.now() });
+  return snapshot;
 }
 
 async function takeScreenshot() {
   try {
     return await chrome.tabs.captureVisibleTab(null, { format: 'jpeg', quality: 80 });
-  } catch {
-    return null;
-  }
+  } catch { return null; }
 }
 
 async function sendAction(tabId, action) {
   await ensureContentScript(tabId);
+  invalidateSnapCache(tabId);
   return chrome.tabs.sendMessage(tabId, { type: 'EXECUTE_ACTION', ...action });
 }
 
-// ── CDP click — real browser mouse events via chrome.debugger ────────────────
-// Falls back to content-script click if CDP fails (e.g. pdf pages, detach race).
+// ── CDP coordinate click ──────────────────────────────────────────────────────
 async function cdpClick(tabId, x, y) {
   const resp = await chrome.runtime.sendMessage({ type: 'CDP_CLICK', tabId, x, y });
   if (!resp?.ok) throw new Error(resp?.error || 'CDP_CLICK failed');
+}
+
+// ── CDP click by backendNodeId (HyperAgent style — no coord drift) ────────────
+// Resolves live bounding box at click time from the actual DOM node.
+async function cdpClickByNode(tabId, backendNodeId) {
+  const resp = await chrome.runtime.sendMessage({ type: 'CDP_CLICK_NODE', tabId, backendNodeId });
+  if (!resp?.ok) throw new Error(resp?.error || 'CDP_CLICK_NODE failed');
+}
+
+// ── Native a11y tree snapshot (Stagehand approach) ────────────────────────────
+// Returns array of {backendNodeId, role, name, props} for all interactive elements.
+// Merges with DOM snapshot to give GPT the richest possible element list.
+const _a11yCache = new Map(); // tabId → {items, ts}
+
+async function getA11yItems(tabId) {
+  const c = _a11yCache.get(tabId);
+  if (c && Date.now() - c.ts < 1200) return c.items;
+  const resp = await chrome.runtime.sendMessage({ type: 'GET_A11Y_SNAPSHOT', tabId });
+  if (!resp?.ok) return [];
+  _a11yCache.set(tabId, { items: resp.items, ts: Date.now() });
+  return resp.items;
+}
+
+// Merge a11y items into the DOM snapshot text as an additional section
+async function getEnrichedSnapshot(tabId, { fresh = false } = {}) {
+  const [domSnap, a11yItems] = await Promise.all([
+    getSnapshot(tabId, { fresh }),
+    getA11yItems(tabId).catch(() => []),
+  ]);
+
+  if (!a11yItems.length) return domSnap;
+
+  // Build a11y section: only items NOT already covered by DOM snapshot
+  // (avoid duplication — use name+role dedup)
+  const domNames = new Set(
+    (domSnap.text.match(/"([^"]+)"/g) || []).map(s => s.slice(1, -1).toLowerCase())
+  );
+  const ROLE_SHORT = { button:'btn', link:'lnk', textbox:'inp', combobox:'sel',
+    checkbox:'chk', radio:'rad', tab:'tab', option:'opt', menuitem:'mnu',
+    slider:'rng', searchbox:'inp', listbox:'sel' };
+
+  const newItems = a11yItems.filter(it => !domNames.has(it.name.toLowerCase()));
+  if (!newItems.length) return domSnap;
+
+  const a11yLines = newItems.map((it, i) => {
+    const rs = ROLE_SHORT[it.role] || it.role.slice(0,3);
+    const ref = `a-${rs}-${it.name.toLowerCase().replace(/[^a-z0-9]+/g,'-').slice(0,20)}`;
+    const state = it.props.disabled ? '🚫' : it.props.checked === true ? '✓' : '';
+    return `[a${i}] ${it.role}${state} "${it.name}" #${ref} nodeId:${it.backendNodeId}`;
+  }).join('\n');
+
+  return {
+    ...domSnap,
+    text: domSnap.text + `\n\nA11Y TREE (browser native — use nodeId: for clicking):\n${a11yLines}`,
+    a11yItems: newItems,
+  };
 }
 
 // ── Quick click — no GPT loop, just fuzzy snapshot match ─────────────────────
@@ -513,27 +580,26 @@ async function runAgentLoop(tabId, goal, onStep, opts = {}) {
     // Brief settle before snapshot
     await new Promise(r => setTimeout(r, 400));
 
-    // Snapshot
+    // Enriched snapshot: DOM elements + native a11y tree merged (Stagehand + HyperAgent)
     let snapshot;
     try {
-      snapshot = await getSnapshot(tabId);
+      snapshot = await getEnrichedSnapshot(tabId);
     } catch (err) {
-      // Content script may have been unloaded by navigation — wait and retry once
       await new Promise(r => setTimeout(r, 1200));
-      try { snapshot = await getSnapshot(tabId); }
+      try { snapshot = await getEnrichedSnapshot(tabId, { fresh: true }); }
       catch (e2) { return { success: false, message: `Cannot read page: ${e2.message}` }; }
     }
 
-    // Stuck detection: if snapshot unchanged twice, inject a scroll to shake things loose
+    // Stuck detection
     const sig = snapshot.text.slice(0, 300);
     if (sig === prevSnapshotSig) {
       sameSnapshotCount++;
       if (sameSnapshotCount >= 2) {
-        onStep({ type: 'step', text: `Step ${step}: page unchanged — scrolling to find more…` });
+        onStep({ type: 'step', text: `Step ${step}: page unchanged — scrolling…` });
         await sendAction(tabId, { action: 'scroll', direction: 'down', amount: 500 });
         await new Promise(r => setTimeout(r, 800));
         sameSnapshotCount = 0;
-        try { snapshot = await getSnapshot(tabId); } catch {}
+        try { snapshot = await getEnrichedSnapshot(tabId, { fresh: true }); } catch {}
       }
     } else {
       sameSnapshotCount = 0;
@@ -657,38 +723,43 @@ async function runAgentLoop(tabId, goal, onStep, opts = {}) {
       continue;
     }
 
-    // All other actions → CDP for clicks (real browser events), content script for the rest
+    // Execute action — priority: cdpClickByNode (HyperAgent) > cdpClick (coords) > JS click
     let result = { success: false, message: 'no response' };
     try {
       if (action.action === 'click') {
-        // Extract @(cx,cy) — match by ref (#ref) first, then by index
-        const coordLine = snapshot.text.split('\n').find(l => {
+        // 1. Try a11y-tree nodeId click (most reliable — live coords at click time)
+        const nodeLine = snapshot.text.split('\n').find(l => {
           if (action.ref && l.includes(`#${action.ref}`)) return true;
           if (action.index != null && l.trimStart().startsWith(`[${action.index}]`)) return true;
           return false;
         });
-        const cm = coordLine?.match(/@\((\d+),(\d+)\)/);
-        if (cm) {
-          // Primary: CDP real mouse event
+        const nodeIdM = nodeLine?.match(/nodeId:(\d+)/);
+        if (nodeIdM) {
           try {
-            await cdpClick(tabId, +cm[1], +cm[2]);
-            result = { success: true, message: `CDP click at (${cm[1]},${cm[2]})` };
-          } catch (cdpErr) {
-            // Fallback: synthetic content-script click
-            onStep({ type: 'step', text: `Step ${step}: CDP failed (${cdpErr.message}) — using JS click…` });
-            result = await sendAction(tabId, action);
-          }
-        } else {
-          // No coords in snapshot — use content-script click
-          result = await sendAction(tabId, action);
+            await cdpClickByNode(tabId, +nodeIdM[1]);
+            result = { success: true, message: `Node click nodeId:${nodeIdM[1]}` };
+          } catch { /* fall through to coord click */ }
         }
+
+        // 2. Coordinate-based CDP click
+        if (!result.success) {
+          const cm = nodeLine?.match(/@\((\d+),(\d+)\)/);
+          if (cm) {
+            try {
+              await cdpClick(tabId, +cm[1], +cm[2]);
+              result = { success: true, message: `CDP click (${cm[1]},${cm[2]})` };
+            } catch { /* fall through to JS click */ }
+          }
+        }
+
+        // 3. JS content-script click (fallback)
+        if (!result.success) result = await sendAction(tabId, action);
+
       } else if (action.action === 'click_xy') {
-        // Primary: CDP real mouse event
         try {
           await cdpClick(tabId, action.x, action.y);
-          result = { success: true, message: `CDP click at (${action.x},${action.y})` };
-        } catch (cdpErr) {
-          onStep({ type: 'step', text: `Step ${step}: CDP failed (${cdpErr.message}) — using JS click…` });
+          result = { success: true, message: `CDP click_xy (${action.x},${action.y})` };
+        } catch {
           result = await sendAction(tabId, action);
         }
       } else {
@@ -698,6 +769,38 @@ async function runAgentLoop(tabId, goal, onStep, opts = {}) {
       result = { success: false, message: err.message };
     }
 
+    // ── Stagehand self-healing: if click/fill fails, re-snapshot + retry once ─
+    if (!result.success && ['click','fill','click_xy'].includes(action.action)) {
+      onStep({ type: 'step', text: `Step ${step}: self-healing — re-reading page…` });
+      await new Promise(r => setTimeout(r, 600));
+      try {
+        const freshSnap = await getEnrichedSnapshot(tabId, { fresh: true });
+        const healAction = await getNextStep(
+          goal + `\n\nSELF-HEAL: previous action "${desc}" failed (${result.message}). Look at the page carefully and find a different way to achieve the same step.`,
+          freshSnap.text,
+          await takeScreenshot(),
+          history
+        );
+        if (!['done','failed','ask'].includes(healAction.action)) {
+          const healLine = freshSnap.text.split('\n').find(l =>
+            (healAction.ref && l.includes(`#${healAction.ref}`)) ||
+            (healAction.index != null && l.trimStart().startsWith(`[${healAction.index}]`))
+          );
+          const hnm = healLine?.match(/nodeId:(\d+)/);
+          const hcm = healLine?.match(/@\((\d+),(\d+)\)/);
+          if (hnm) {
+            try { await cdpClickByNode(tabId, +hnm[1]); result = { success: true, message: `Healed via nodeId:${hnm[1]}` }; } catch {}
+          }
+          if (!result.success && hcm) {
+            try { await cdpClick(tabId, +hcm[1], +hcm[2]); result = { success: true, message: `Healed via coords` }; } catch {}
+          }
+          if (!result.success) result = await sendAction(tabId, healAction).catch(() => result);
+          if (result.success) onStep({ type: 'step', text: `Step ${step}: ✓ self-healed` });
+        }
+      } catch { /* healing failed — continue normally */ }
+    }
+
+    invalidateSnapCache(tabId);
     history.push(`${desc}: ${result?.success ? 'ok' : result?.message || '?'}||${actionKey}`);
     if (_abortLoop) return { success: false, message: 'Stopped by user.' };
 
