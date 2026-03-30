@@ -204,21 +204,30 @@ const LOGIN_RE = /\b(?:login|log\s*in)\s+to\s+(kapture|kapturecrm|adjetter|crm|p
 // ── Agent system prompt ───────────────────────────────────────────────────────
 const AGENT_PROMPT = `
 You are an autonomous browser agent controlling a real Chrome browser via voice commands.
-You see: a screenshot of the current page + a list of interactive elements.
-Element format: [idx] state role "name" val:"value" [type] @(cx,cy)
-[react-select] = custom searchable dropdown — never use "select" action on it.
+You see: a screenshot of the current page + a structured element list.
+
+Element format: [idx] role "name" val:"value" [type] #ref @(cx,cy)
+- #ref  = stable semantic ID (preferred way to reference elements — survives React re-renders)
+- [idx] = array index (fallback if no ref)
+- @(cx,cy) = pixel coords (last resort for click_xy)
+- [react-select] = custom searchable dropdown — never use "select" action on it.
 
 Return ONE JSON action per turn. Return ONLY valid JSON, no markdown, no explanation.
 
+REFERENCING ELEMENTS (in order of preference):
+1. Use #ref  → {"action":"click","ref":"btn-add-to-cart","description":"..."}
+2. Use index → {"action":"click","index":12,"description":"..."}
+3. Use coords only for click_xy
+
 ⚠️ ANTI-HALLUCINATION RULES (NEVER BREAK):
-- ONLY use [idx] numbers that appear verbatim in the "Current page:" element list.
-- NEVER invent, guess, or assume an element index exists. If unsure, use click_xy with @(cx,cy) coords from screenshot instead.
-- If the target element is NOT in the element list AND not visible in screenshot, return ask — do NOT fabricate an action.
-- Base EVERY decision on what is ACTUALLY shown in the screenshot and element list, not on what you expect the page to look like.
+- ONLY use #ref values and [idx] numbers that appear verbatim in the element list below.
+- NEVER invent refs or indices. If unsure, use click_xy with @(cx,cy) from the screenshot.
+- If the target element is NOT in the list AND not visible in the screenshot → return ask.
+- Base EVERY decision on what is ACTUALLY shown — not on what you expect the page to look like.
 
 ACTIONS:
-click      {"action":"click","index":N,"description":"..."}
-fill       {"action":"fill","index":N,"value":"text","description":"..."}
+click      {"action":"click","ref":"#ref OR omit","index":N,"description":"..."}
+fill       {"action":"fill","ref":"#ref OR omit","index":N,"value":"text","description":"..."}
 press_on   {"action":"press_on","index":N,"key":"Enter","description":"..."}
 click_xy   {"action":"click_xy","x":N,"y":N,"description":"..."}
 scroll     {"action":"scroll","direction":"down","amount":400,"description":"..."}
@@ -340,8 +349,8 @@ async function getNextStep(goal, pageText, screenshotUrl, history) {
   );
   const action = JSON.parse(raw);
 
-  // Validate: if action uses an index, confirm it exists in the snapshot
-  if (action.index != null && !['done','failed','ask'].includes(action.action)) {
+  // Validate: if action uses an index (not ref), confirm it exists in the snapshot
+  if (action.index != null && !action.ref && !['done','failed','ask'].includes(action.action)) {
     const validIndices = parseSnapshotIndices(pageText);
     if (validIndices.size > 0 && !validIndices.has(action.index)) {
       // Index hallucinated — retry once with an explicit correction
@@ -602,8 +611,8 @@ async function runAgentLoop(tabId, goal, onStep, opts = {}) {
       }
     }
 
-    // Action key (stable — not description which GPT varies every turn)
-    const actionKey = `${action.action}:${action.index ?? `${action.x ?? ''},${action.y ?? ''}`}`;
+    // Action key (stable — use ref if available, else index, else coords)
+    const actionKey = `${action.action}:${action.ref ?? action.index ?? `${action.x ?? ''},${action.y ?? ''}`}`;
 
     // ── Single-action repeat guard ────────────────────────────────────────
     const recentKeys = history.map(h => h.split('||')[1]).filter(Boolean);
@@ -652,9 +661,12 @@ async function runAgentLoop(tabId, goal, onStep, opts = {}) {
     let result = { success: false, message: 'no response' };
     try {
       if (action.action === 'click') {
-        // Extract @(cx,cy) coordinates for this element from snapshot text
-        const coordLine = snapshot.text.split('\n')
-          .find(l => action.index != null && l.trimStart().startsWith(`[${action.index}]`));
+        // Extract @(cx,cy) — match by ref (#ref) first, then by index
+        const coordLine = snapshot.text.split('\n').find(l => {
+          if (action.ref && l.includes(`#${action.ref}`)) return true;
+          if (action.index != null && l.trimStart().startsWith(`[${action.index}]`)) return true;
+          return false;
+        });
         const cm = coordLine?.match(/@\((\d+),(\d+)\)/);
         if (cm) {
           // Primary: CDP real mouse event
@@ -738,10 +750,12 @@ async function execDirect(tabId, actions, onStep) {
     } else if (action.action === 'click' || action.action === 'click_xy') {
       // Always try CDP first — real mouse events are most reliable
       let x = action.x, y = action.y;
-      if (action.action === 'click' && action.index != null) {
-        // Extract coordinates from snapshot
-        const coordLine = snapshot.text.split('\n')
-          .find(l => l.trimStart().startsWith(`[${action.index}]`));
+      if (action.action === 'click') {
+        const coordLine = snapshot.text.split('\n').find(l => {
+          if (action.ref && l.includes(`#${action.ref}`)) return true;
+          if (action.index != null && l.trimStart().startsWith(`[${action.index}]`)) return true;
+          return false;
+        });
         const cm = coordLine?.match(/@\((\d+),(\d+)\)/);
         if (cm) { x = +cm[1]; y = +cm[2]; }
       }

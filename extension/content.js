@@ -5,6 +5,47 @@
 // Handles: GET_SNAPSHOT (build element list) + EXECUTE_ACTION (DOM interactions)
 
 let _els = []; // cached snapshot — rebuilt on every GET_SNAPSHOT call
+const _refMap = new Map(); // ref → element entry, for stable re-finding
+
+// ── Stable ref generation (playwright-mcp style) ──────────────────────────────
+const ROLE_SHORT = { button:'btn', link:'lnk', textbox:'inp', combobox:'sel',
+  checkbox:'chk', radio:'rad', tab:'tab', option:'opt', menuitem:'mnu',
+  slider:'rng', generic:'div', listitem:'li' };
+
+function makeRef(role, name, idx) {
+  const r = ROLE_SHORT[role] || role.slice(0, 3);
+  const n = name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 22);
+  return `${r}-${n || idx}`;
+}
+
+// ── Semantic re-find: if a cached element is removed from DOM, find it again ──
+function reFind(entry) {
+  // Try by ID
+  if (entry._el.id) {
+    const el = document.getElementById(entry._el.id);
+    if (el) return el;
+  }
+  // Try by aria-label exact match
+  const label = entry._el.getAttribute?.('aria-label');
+  if (label) {
+    const el = document.querySelector(`[aria-label="${CSS.escape(label)}"]`);
+    if (el && document.contains(el)) return el;
+  }
+  // Try by role + accessible name scan
+  const SELECTORS = 'button,input,select,textarea,a[href],[role]';
+  for (const el of document.querySelectorAll(SELECTORS)) {
+    if (getRole(el) === entry.role && getAccessibleName(el).startsWith(entry.name.slice(0, 25))) {
+      if (document.contains(el)) return el;
+    }
+  }
+  // Try cursor:pointer elements with matching name
+  for (const el of document.querySelectorAll('div,span,li')) {
+    if (getAccessibleName(el) === entry.name && getComputedStyle(el).cursor === 'pointer') {
+      if (document.contains(el)) return el;
+    }
+  }
+  return null;
+}
 
 // ── Accessible name resolution ────────────────────────────────────────────────
 function getAccessibleName(el) {
@@ -106,9 +147,10 @@ function getVisibleText() {
 // ── Snapshot builder ──────────────────────────────────────────────────────────
 function buildSnapshot() {
   _els = [];
+  _refMap.clear();
   const vw = window.innerWidth, vh = window.innerHeight;
-  const MARGIN = 150; // include elements slightly outside viewport
-  const nameCount = {}, nameSeen = {};
+  const MARGIN = 150;
+  const nameCount = {}, nameSeen = {}, refCount = {};
 
   const SELECTORS = [
     'button:not([disabled])',
@@ -146,8 +188,7 @@ function buildSnapshot() {
   // Pass 1: standard interactive elements
   for (const el of queryShadowAll(document, SELECTORS)) addEl(el);
 
-  // Pass 2: clickable card divs/spans — elements with cursor:pointer that look
-  // like buttons/cards but have no semantic role (common in React component UIs)
+  // Pass 2: clickable card divs/spans (React card UIs)
   for (const el of document.querySelectorAll('div,span,li,td,p')) {
     if (seen.has(el)) continue;
     try {
@@ -157,14 +198,13 @@ function buildSnapshot() {
     } catch { continue; }
     const rect = el.getBoundingClientRect();
     if (!rect.width || !rect.height) continue;
-    // Skip large containers (likely wrappers, not cards)
     if (rect.width > vw * 0.8 || rect.height > 200) continue;
     const name = getAccessibleName(el);
     if (!name || name.length < 2) continue;
     addEl(el);
   }
 
-  // Apply nth suffixes
+  // Assign indices, generate stable refs, populate _refMap
   for (const e of _els) {
     const key = `${e.role}::${e.name.toLowerCase()}`;
     if (nameCount[key] > 1) {
@@ -172,14 +212,22 @@ function buildSnapshot() {
       e.name = `${e.name} [${nameSeen[key]}]`;
     }
     e.index = _els.indexOf(e);
+
+    // Generate unique stable ref
+    let ref = makeRef(e.role, e.name, e.index);
+    if (refCount[ref]) { ref = `${ref}-${refCount[ref]}`; }
+    refCount[ref] = (refCount[ref] || 0) + 1;
+    e.ref = ref;
+    _refMap.set(ref, e);
   }
 
-  // Format element list
-  const MAX_EL_CHARS = 4500;
+  // Format — show ref instead of raw coords; coords kept for CDP fallback
+  const MAX_EL_CHARS = 5000;
   let lines = _els.map(e => {
     const val  = e.value ? ` val:"${e.value}"` : '';
     const tag  = e.type  ? ` [${e.type}]`      : '';
-    return `[${e.index}] ${e.state||'·'} ${e.role} "${e.name}"${val}${tag} @(${e.cx},${e.cy})`;
+    const st   = e.state && e.state !== '·' ? ` ${e.state}` : '';
+    return `[${e.index}] ${e.role}${st} "${e.name}"${val}${tag} #${e.ref} @(${e.cx},${e.cy})`;
   }).join('\n');
   if (lines.length > MAX_EL_CHARS) lines = lines.slice(0, MAX_EL_CHARS) + '\n...(truncated)';
 
@@ -226,22 +274,32 @@ function fireKey(target, key) {
   }
 }
 
-function getEl(index) {
-  const e = _els[index];
-  if (!e) return null;
-  return document.contains(e._el) ? e._el : null;
+// Look up element by index OR ref — with semantic re-finding if DOM is stale
+function getEl(index, ref) {
+  // Try ref lookup first (more stable)
+  const entry = ref ? _refMap.get(ref) : _els[index];
+  if (!entry) return null;
+  // Element still in DOM — return it directly
+  if (document.contains(entry._el)) return entry._el;
+  // Stale — try semantic re-find so React re-renders don't break clicks
+  const live = reFind(entry);
+  if (live) {
+    entry._el = live; // update cache
+    return live;
+  }
+  return null;
 }
 
 // ── Action executor ───────────────────────────────────────────────────────────
 async function executeAction(msg) {
-  const { action, index, value, x, y, x1, y1, x2, y2, key, url, script,
+  const { action, index, ref, value, x, y, x1, y1, x2, y2, key, url, script,
     direction, amount, text, ms } = msg;
 
   try {
     switch (action) {
 
       case 'click': {
-        let el = getEl(index);
+        let el = getEl(index, ref);
         if (!el) {
           // Element stale — try coordinate fallback using stored cx/cy
           const stored = _els[index];
@@ -276,7 +334,7 @@ async function executeAction(msg) {
       }
 
       case 'double_click': {
-        const el = getEl(index);
+        const el = getEl(index, ref);
         if (!el) return { success: false, message: `Element [${index}] not found` };
         el.focus();
         el.dispatchEvent(new MouseEvent('dblclick', { bubbles: true, cancelable: true }));
@@ -284,7 +342,7 @@ async function executeAction(msg) {
       }
 
       case 'fill': {
-        const el = getEl(index);
+        const el = getEl(index, ref);
         if (!el) return { success: false, message: `Element [${index}] not found` };
         el.scrollIntoView({ block: 'nearest' });
         // Dismiss overlays first
@@ -339,7 +397,7 @@ async function executeAction(msg) {
       }
 
       case 'select': {
-        const el = getEl(index);
+        const el = getEl(index, ref);
         if (!el || el.tagName !== 'SELECT')
           return { success: false, message: `Native select [${index}] not found` };
         const opt = Array.from(el.options).find(o =>
@@ -353,7 +411,7 @@ async function executeAction(msg) {
       }
 
       case 'press_on': {
-        const el = getEl(index);
+        const el = getEl(index, ref);
         if (!el) return { success: false, message: `Element [${index}] not found` };
         el.focus();
         await new Promise(r => setTimeout(r, 60));
@@ -407,7 +465,7 @@ async function executeAction(msg) {
       }
 
       case 'hover': {
-        const el = getEl(index);
+        const el = getEl(index, ref);
         if (el) {
           el.dispatchEvent(new MouseEvent('mouseover',  { bubbles: true }));
           el.dispatchEvent(new MouseEvent('mouseenter', { bubbles: true }));
