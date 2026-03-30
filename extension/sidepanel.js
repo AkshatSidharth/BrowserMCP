@@ -408,6 +408,20 @@ async function runAgentLoop(tabId, goal, onStep, opts = {}) {
 
   for (let step = 1; step <= MAX; step++) {
     if (_abortLoop) return { success: false, message: 'Stopped by user.' };
+
+    // Mid-loop interrupt: inject user's new instruction and continue with updated goal
+    if (_interruptCmd) {
+      const cmd = _interruptCmd;
+      _interruptCmd = null;
+      const norm = normalizeText(cmd);
+      onStep({ type: 'step', text: `↩ User says: "${norm}"` });
+      speak(`Understood. ${norm}.`);
+      history.push(`[USER INSTRUCTION mid-loop]: ${norm}`);
+      // Update goal to include the new instruction
+      goal = goal + `\n\nUSER UPDATE: ${norm}`;
+      prevSnapshotSig = ''; // force fresh read
+    }
+
     onStep({ type: 'step', text: `Step ${step}: reading page…` });
 
     // Brief settle before snapshot
@@ -710,18 +724,35 @@ function onStep(info) {
 }
 
 let _isRunning = false;
+let _interruptCmd = null; // mid-loop voice interrupt
 
 async function submitCommand(text) {
   if (!text.trim()) return;
-  if (_isRunning) { addStep('Already running — stop first.', 'error'); return; }
+
+  // Mid-loop interrupt: queue the new command instead of blocking
+  if (_isRunning) {
+    const norm = normalizeText(text.trim());
+    const isStop = /^(stop|cancel|abort|pause|enough|quit)$/i.test(norm.split(' ')[0]);
+    if (isStop) {
+      _abortLoop = true;
+      addStep('Stopping…', 'active');
+      speak('Stopping.');
+    } else {
+      _interruptCmd = norm;
+      addStep(`↩ Interrupt queued: "${norm}"`, 'active');
+      speak(`Got it. I'll ${norm} after this step.`);
+    }
+    return;
+  }
+
   _isRunning = true;
   _abortLoop = false;
+  _interruptCmd = null;
   clearSteps();
   transcriptEl.textContent = text;
   transcriptEl.className = 'transcript-text';
   setStatus('running', 'Running…');
-  micBtn.classList.add('disabled');
-  micBtn.disabled = true;
+  // Keep mic ENABLED so user can interrupt mid-loop
   sendBtn.textContent = '■';
   sendBtn.title = 'Stop';
   textInput.disabled = true;
@@ -745,8 +776,7 @@ async function submitCommand(text) {
     }
   } finally {
     _isRunning = false;
-    micBtn.classList.remove('disabled');
-    micBtn.disabled = false;
+    _interruptCmd = null;
     sendBtn.textContent = '↵';
     sendBtn.title = '';
     textInput.disabled = false;
