@@ -402,145 +402,95 @@ async function submitCommand(text) {
   }
 }
 
-// ── Voice recording — permission requested ONCE on load ───────────────────────
-// getUserMedia is called once during init to trigger the browser's permission
-// prompt. After that, we open a new stream per recording session but Chrome
-// won't re-prompt because permission is already granted.
+// ── Voice — Web Speech API (works in extension sidepanel without getUserMedia) ─
+// Falls back to MediaRecorder + Whisper if Web Speech API is unavailable.
 
-let micPermission  = 'prompt'; // 'granted' | 'denied' | 'prompt'
-let mediaRecorder  = null;
-let audioChunks    = [];
-let isRecording    = false;
+const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+let recognition   = null;
+let isRecording   = false;
+let interimText   = '';
 
-async function requestMicPermission() {
-  try {
-    // Check current state first
-    const status = await navigator.permissions.query({ name: 'microphone' });
-    micPermission = status.state;
-    status.onchange = () => { micPermission = status.state; updateMicButton(); };
+function initSpeechRecognition() {
+  if (!SpeechRecognition) return false;
+  recognition = new SpeechRecognition();
+  recognition.continuous      = false;
+  recognition.interimResults  = true;
+  recognition.lang            = 'en-IN'; // English + Hindi/Hinglish
 
-    if (micPermission === 'granted') { updateMicButton(); return true; }
-    if (micPermission === 'denied')  { updateMicButton(); return false; }
-
-    // 'prompt' — request it now (requires user gesture, so we show a button first)
-    updateMicButton();
-    return false;
-  } catch {
-    // permissions API not available — try directly
-    try {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      stream.getTracks().forEach(t => t.stop());
-      micPermission = 'granted';
-      updateMicButton();
-      return true;
-    } catch {
-      micPermission = 'denied';
-      updateMicButton();
-      return false;
-    }
-  }
-}
-
-function updateMicButton() {
-  if (micPermission === 'denied') {
-    micBtn.classList.add('disabled');
-    micIcon.textContent  = '🚫';
-    micLabel.textContent = 'Mic blocked — see instructions';
-    addStep('Microphone blocked. Go to Chrome Settings → Privacy → Microphone → Allow.', 'error');
-  } else if (micPermission === 'prompt') {
-    micIcon.textContent  = '🎤';
-    micLabel.textContent = 'Click to allow microphone';
-  } else {
-    micIcon.textContent  = '🎤';
-    micLabel.textContent = 'Hold to speak';
-    micBtn.classList.remove('disabled');
-  }
-}
-
-async function startRecording() {
-  // Open a fresh stream — no re-prompt if permission already granted
-  const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-  micPermission = 'granted';
-  const mimeType = MediaRecorder.isTypeSupported('audio/webm;codecs=opus')
-    ? 'audio/webm;codecs=opus' : 'audio/webm';
-  mediaRecorder = new MediaRecorder(stream, { mimeType });
-  audioChunks   = [];
-  mediaRecorder.ondataavailable = e => { if (e.data.size > 0) audioChunks.push(e.data); };
-  mediaRecorder.start();
-  isRecording = true;
-}
-
-async function stopRecordingAndTranscribe() {
-  return new Promise(resolve => {
-    if (!mediaRecorder) { resolve(''); return; }
-    mediaRecorder.onstop = async () => {
-      const blob = new Blob(audioChunks, { type: 'audio/webm' });
-      mediaRecorder.stream.getTracks().forEach(t => t.stop());
-      mediaRecorder = null;
-      isRecording   = false;
-      try {
-        const text = await transcribeAudio(blob);
-        resolve(text);
-      } catch (err) {
-        resolve('');
-        addStep(`Transcription error: ${err.message}`, 'error');
-      }
-    };
-    mediaRecorder.stop();
-  });
-}
-
-// Hold to record — on first click if 'prompt', we request permission then start
-micBtn.addEventListener('mousedown', async () => {
-  if (isRecording) return;
-
-  // If permission not yet granted, request it now (this IS a user gesture)
-  if (micPermission !== 'granted') {
-    try {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      stream.getTracks().forEach(t => t.stop());
-      micPermission = 'granted';
-      updateMicButton();
-      addStep('Microphone access granted ✓', 'success');
-    } catch (err) {
-      micPermission = 'denied';
-      updateMicButton();
-      addStep(`Mic permission denied: ${err.message}`, 'error');
-    }
-    return; // Don't start recording on the same click as permission grant
-  }
-
-  if (micBtn.classList.contains('disabled')) return;
-
-  try {
-    await startRecording();
+  recognition.onstart = () => {
+    isRecording = true;
     micBtn.classList.add('listening');
     micIcon.textContent  = '⏹';
     micLabel.textContent = 'Release to send';
     setStatus('running', 'Listening…');
     transcriptEl.textContent = '…';
     transcriptEl.className   = 'transcript-text interim';
-  } catch (err) {
-    micPermission = 'denied';
-    updateMicButton();
-    addStep(`Mic error: ${err.message}`, 'error');
-  }
-});
+  };
 
-micBtn.addEventListener('mouseup', async () => {
-  if (!isRecording) return;
+  recognition.onresult = (e) => {
+    interimText = '';
+    let final = '';
+    for (const result of e.results) {
+      if (result.isFinal) final += result[0].transcript;
+      else interimText += result[0].transcript;
+    }
+    transcriptEl.textContent = final || interimText || '…';
+    transcriptEl.className   = final ? 'transcript-text' : 'transcript-text interim';
+  };
+
+  recognition.onerror = (e) => {
+    isRecording = false;
+    resetMicBtn();
+    if (e.error === 'not-allowed') {
+      addStep('Mic blocked. Go to chrome://settings/content/microphone and allow.', 'error');
+      setStatus('error', 'Mic blocked');
+    } else if (e.error !== 'no-speech') {
+      addStep(`Speech error: ${e.error}`, 'error');
+      setStatus('error', e.error);
+    } else {
+      setStatus('ready', 'Ready');
+    }
+  };
+
+  recognition.onend = () => {
+    isRecording = false;
+    resetMicBtn();
+    const text = transcriptEl.textContent.trim();
+    if (text && text !== '…' && text !== '—') {
+      submitCommand(text);
+    } else {
+      setStatus('ready', 'Ready');
+      transcriptEl.textContent = '—';
+      transcriptEl.className   = 'transcript-text';
+    }
+  };
+
+  return true;
+}
+
+function resetMicBtn() {
   micBtn.classList.remove('listening');
   micIcon.textContent  = '🎤';
   micLabel.textContent = 'Hold to speak';
-  setStatus('running', 'Transcribing…');
+}
 
-  const text = await stopRecordingAndTranscribe();
-  if (text) {
-    await submitCommand(text);
+const hasSpeechAPI = initSpeechRecognition();
+
+// Hold to record
+micBtn.addEventListener('mousedown', () => {
+  if (micBtn.classList.contains('disabled') || isRecording) return;
+  if (hasSpeechAPI) {
+    interimText = '';
+    try { recognition.start(); } catch { /* already started */ }
   } else {
-    setStatus('ready', 'Ready');
-    transcriptEl.textContent = '—';
-    transcriptEl.className   = 'transcript-text';
+    addStep('Web Speech API not available. Try Chrome browser.', 'error');
+  }
+});
+
+micBtn.addEventListener('mouseup', () => {
+  if (!isRecording) return;
+  if (hasSpeechAPI) {
+    try { recognition.stop(); } catch { /* already stopped */ }
   }
 });
 
@@ -557,9 +507,12 @@ textInput.addEventListener('keydown', e => {
   if (e.key === 'Enter') sendBtn.click();
 });
 
-// Settings
+// Settings + Refresh
 settingsBtn.addEventListener('click', () => chrome.runtime.openOptionsPage());
 document.getElementById('openOptionsLink')?.addEventListener('click', () => chrome.runtime.openOptionsPage());
+document.getElementById('refreshBtn').addEventListener('click', () => {
+  chrome.runtime.reload();
+});
 
 // ── Init ──────────────────────────────────────────────────────────────────────
 async function init() {
@@ -571,8 +524,9 @@ async function init() {
     apiWarning.style.display = 'none';
     setStatus('ready', 'Ready');
   }
-  // Check mic permission state without prompting
-  await requestMicPermission();
+  if (!hasSpeechAPI) {
+    addStep('Web Speech API not found. Use Chrome for voice input.', 'error');
+  }
 }
 
 init();
