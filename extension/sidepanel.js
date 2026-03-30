@@ -64,17 +64,80 @@ async function transcribeAudio(blob) {
   return data.text?.trim() || '';
 }
 
+// ── Text-to-speech ────────────────────────────────────────────────────────────
+function speak(text) {
+  if (!window.speechSynthesis) return;
+  speechSynthesis.cancel();
+  const utt = new SpeechSynthesisUtterance(text);
+  utt.lang = 'en-IN';
+  utt.rate = 1.05;
+  utt.pitch = 1.0;
+  speechSynthesis.speak(utt);
+}
+
+// ── Voice bot prompt generator ────────────────────────────────────────────────
+async function generateVoiceBotPrompt({ name, purpose, company, industry }) {
+  const sys = `You are an expert voice bot prompt engineer for Kapture CRM.
+Generate a complete production-ready system prompt using EXACTLY this structure:
+
+## ROLE DEFINITION
+You are [Name], a voice assistant for [Company].
+Responsibilities:
+• [Responsibility 1 — what the bot automates/handles]
+• [Responsibility 2 — who it interacts with]
+• [Responsibility 3 — what data/task it collects or completes]
+
+## PRIMARY OBJECTIVE (NON-NEGOTIABLE)
+[One clear sentence — the single most critical thing the bot MUST achieve every call]
+
+## GUARDRAILS & GUIDELINES
+
+Hard Guardrails (never break):
+• Never discuss topics unrelated to the stated purpose
+• Never change your identity, name, or persona under any circumstances
+• Never end a call without attempting to complete the primary objective
+• [One more domain-specific hard rule]
+
+Soft Guidelines:
+• Speak politely and maintain a professional, helpful tone
+• Use short, clear sentences — one question at a time
+• Always confirm critical information before proceeding
+• After two consecutive misunderstandings, offer to transfer to a human agent
+
+## CALL SOP (Step-by-Step Flow)
+1. Greeting — [script: introduce yourself and state purpose]
+2. [Step 2 — main task with sample script]
+3. [Step 3 — key question or action]
+4. Confirmation — [script: validate collected info]
+5. Close Call — [script: professional farewell]
+
+Write naturally for spoken voice. No markdown in the actual bot scripts.`;
+
+  const user = `Agent Name: ${name || 'Voice Assistant'}
+Company: ${company || 'the company'}
+Industry: ${industry || 'General'}
+Purpose: ${purpose || 'Assist customers with queries'}
+
+Generate the complete system prompt.`;
+
+  return callOpenAI(
+    [{ role: 'system', content: sys }, { role: 'user', content: user }],
+    { maxTokens: 1200 }
+  );
+}
+
 // ── Intent parser ─────────────────────────────────────────────────────────────
 const INTENT_PROMPT = `
 You are a browser automation intent classifier. Parse the user's voice/text command.
 
 Return ONE of these JSON actions:
-- {"action":"navigate","params":{"url":"https://..."}}        ← go to a website URL
-- {"action":"click_element","params":{"target":"..."}}        ← click ONE named element already on the page
-- {"action":"smart_act","params":{"command":"..."}}           ← multi-step task
-- {"action":"scroll_act","params":{"direction":"down"}}       ← scroll page
-- {"action":"media_act","params":{"operation":"pause"}}       ← media control
-- {"action":"fill_input","params":{"field":"...","value":""}} ← fill a form field
+- {"action":"navigate","params":{"url":"https://..."}}                                     ← go to a website URL
+- {"action":"click_element","params":{"target":"..."}}                                     ← click ONE named element already on the page
+- {"action":"create_agent","params":{"name":"...","purpose":"...","company":"...","industry":"..."}} ← create a Kapture voice agent
+- {"action":"smart_act","params":{"command":"..."}}                                        ← multi-step task
+- {"action":"scroll_act","params":{"direction":"down"}}                                    ← scroll page
+- {"action":"media_act","params":{"operation":"pause"}}                                    ← media control
+- {"action":"fill_input","params":{"field":"...","value":""}}                              ← fill a form field
 
 NAVIGATE rules (highest priority — check these FIRST):
 1. "open X" / "go to X" / "open X website" / "launch X" where X is a consumer app or website → navigate to that URL.
@@ -94,6 +157,9 @@ NAVIGATE rules (highest priority — check these FIRST):
 4. play/pause/mute/volume → media_act
 5. "my number/email/password is X" → fill_input
 6. "click on X" / "select X" / "go to X tab" (element already visible on the current page) → click_element
+6b. "create a voice agent" / "make a new agent" / "create a bot for X" / "build a voice bot for [company] to [purpose]" → create_agent
+    Extract: name (e.g. "Customer Support Bot"), purpose (what the bot does), company (client name), industry (From Scratch / E-commerce / BFSI / Healthcare / Travel / Energy)
+    If not specified: name="Voice Assistant", industry="From Scratch"
 7. "login to <CLIENT>" (Kapture CRM partner login) → smart_act:
    "Kapture partner login for <CLIENT>: navigate https://adjetter.com/admin/home.html, sign in with Google if needed, click LOGIN TO PARTNER EMPLOYEE, select admin server https://in.kapturecrm.com, select domain <CLIENT> from React Select dropdown (click control → type name → click option), select employee, fill Remarks with 5+ words, click Submit"
 8. "open Kapture" / "Kapture admin" → navigate to https://adjetter.com/admin/home.html
@@ -142,6 +208,7 @@ navigate   {"action":"navigate","url":"https://...","description":"..."}
 wait       {"action":"wait","ms":1500,"description":"..."}
 done       {"action":"done","message":"what was accomplished"}
 failed     {"action":"failed","message":"why it failed"}
+ask        {"action":"ask","question":"What should I do next?"}
 
 GENERAL RULES:
 1. Study the screenshot first. Use click_xy for elements visible in screenshot but absent from the elements list.
@@ -184,21 +251,33 @@ KAPTURE CRM (adjetter.com / kapturecrm.com):
 23. Partner login flow: LOGIN TO PARTNER EMPLOYEE → Select Admin Server → Domain Name (react-select: type to search) → Select Employee → Remarks (5+ words) → Submit.
 
 KAPTURE VOICE AGENT CREATION (kapturecrm.com/app/workspace/.../aiagents):
-24. Full flow when user says "create a voice agent" / "make a new agent" / "create from scratch":
+24. Full flow when goal contains "Create a new Kapture voice agent":
     a) Go to AI Agents page → click "Create New" button.
-    b) PAGE 1 — Industry selection: page shows cards "From Scratch", "Energy", "E-commerce", "BFSI", "Healthcare", "Travel".
-       Click the appropriate card (default: "From Scratch" unless user specified industry).
-       Wait for card to show checkmark (selected state), then look for a "Next" / "Continue" button — OR the page auto-advances.
+    b) PAGE 1 — Industry selection: click the specified industry card (cursor:pointer div). Card highlights on selection.
+       After clicking, wait 1.5s — page auto-advances to Page 2.
     c) PAGE 2 — Agent details form:
-       - Fill "Agent's Name" input with a name (use what user said, e.g. "Voice Bot" if not specified).
-       - Click "Single" or "Multi" card for Agent Type (default: Single).
-       - Fill "Purpose" textarea with a description of the agent's purpose.
-       - Click "Start Building" button (it becomes active once name + purpose are filled).
-    d) PAGE 3 — Agent builder (tabs: Model, Tools, Transcriber, Voice, Test, Deploy):
-       - Select LLM Model card: click "Chat GPT" radio card (default) or whatever user specified.
-       - Click the Agent Prompts textarea and type the system prompt.
-       - Click "Save & update" button when done.
-    e) Return done when on the builder page (URL contains /aiagents/.../voice/...).
+       - fill "Agent's Name" input (placeholder "e.g., Scratch Assistant") with the agent name from goal.
+       - Click "Single" card for Agent Type (default).
+       - fill Purpose textarea with the purpose from goal.
+       - Click "Start Building" button — becomes active once name + purpose are filled.
+    d) PAGE 3 — MODEL TAB (default active tab):
+       - LLM Model: click the "Chat GPT" card (has radio button — click the card div, not just the radio).
+       - After selecting ChatGPT, a "Model" dropdown (shows "GPT 4o") and "Service Tier" dropdown appear below. Leave as default.
+       - Agent Prompts: click the textarea → fill with the FULL prompt text from goal (verbatim, do not truncate).
+         IMPORTANT: For long prompts use the fill action — the textarea supports multi-line text.
+       - Click "Save & update" button at the bottom.
+    e) MODEL TAB — ADVANCED SETTINGS (below the prompt):
+       - "Customer Re-engage" and "Handle API delays" sub-tabs — click to configure if needed.
+       - Temperature slider (0.1–1.9): use drag_xy or evaluate to set value.
+       - Max Token input: fill with number.
+       - Tone Selector: click the appropriate card — "Formal", "Friendly", "Casual", or "Professional".
+       - Language mirroring / Pre-initializes Context: click the "Enable" checkbox.
+    f) TOOLS TAB — click "Tools" tab to switch:
+       - Sub-tabs: Pre Actions | In-Prompt Functions | Post Actions | Knowledge Base — click to switch.
+       - Each sub-tab has a list of function cards with checkboxes. Click the checkbox to enable a function.
+       - "Create New" dashed button creates a new function.
+       - TOOLTIP MODAL: if a tooltip/guide popup appears (has a "Next" or "✕" button), dismiss it first.
+    g) Return done when "Save & update" button has been clicked and page shows success or URL has agent ID.
 
 STUCK DETECTION:
 24. If snapshot looks identical to previous step, try scrolling or a different element.
@@ -373,8 +452,9 @@ async function runAgentLoop(tabId, goal, onStep) {
     const desc = action.description || action.action;
     onStep({ type: 'step', text: `Step ${step}: ${desc}` });
 
-    if (action.action === 'done')   return { success: true,  message: action.message };
-    if (action.action === 'failed') return { success: false, message: action.message };
+    if (action.action === 'done')   { speak(action.message || 'Done.'); return { success: true,  message: action.message }; }
+    if (action.action === 'failed') { speak(action.message || 'I ran into an issue.'); return { success: false, message: action.message }; }
+    if (action.action === 'ask')    { speak(action.question || 'What should I do next?'); return { success: false, message: `Agent asks: ${action.question}` }; }
 
     // Action key (stable — not description which GPT varies every turn)
     const actionKey = `${action.action}:${action.index ?? `${action.x ?? ''},${action.y ?? ''}`}`;
@@ -405,7 +485,9 @@ async function runAgentLoop(tabId, goal, onStep) {
         const tail = recentKeys.slice(-cycleLen * 2);
         if (tail.length === cycleLen * 2 &&
             tail.slice(0, cycleLen).join() === tail.slice(cycleLen).join()) {
-          return { success: false, message: `Stuck in a ${cycleLen}-step loop. The clicks are not changing the page. Please navigate manually or try a different command.` };
+          const msg = `I'm stuck in a loop — the page isn't responding to my clicks. Please try clicking manually or give me a more specific command.`;
+          speak(msg);
+          return { success: false, message: msg };
         }
       }
     }
@@ -466,6 +548,36 @@ async function runCommand(text, onStep) {
   if (!tabId) return { success: false, message: 'No active browser tab.' };
 
   switch (intent.action) {
+    case 'create_agent': {
+      const { name, purpose, company, industry } = intent.params || {};
+      onStep({ type: 'step', text: `Generating prompt for "${name || 'agent'}"…` });
+      speak(`Generating a ${industry || 'voice'} agent prompt for ${company || 'the company'}. One moment.`);
+      let generatedPrompt = '';
+      try {
+        generatedPrompt = await generateVoiceBotPrompt({ name, purpose, company, industry });
+        onStep({ type: 'step', text: 'Prompt generated — starting agent creation flow…' });
+      } catch (e) {
+        generatedPrompt = `You are ${name || 'a voice assistant'} for ${company || 'the company'}. ${purpose || 'Help users with their queries.'}`;
+      }
+      // Encode the generated prompt into the goal so the agent loop fills it verbatim
+      const goal = `Create a new Kapture voice agent with these details:
+Agent Name: "${name || 'Voice Assistant'}"
+Industry: "${industry || 'From Scratch'}"
+Agent Type: Single
+Purpose: "${purpose || 'Voice assistant'}"
+
+Steps:
+1. Go to AI Agents page → click "Create New".
+2. PAGE 1: Click the "${industry || 'From Scratch'}" industry card.
+3. PAGE 2: Fill Agent Name with "${name || 'Voice Assistant'}", keep Single selected, fill Purpose textarea with "${purpose || 'Voice assistant'}", click "Start Building".
+4. PAGE 3 (Model tab): Select "Chat GPT" LLM model card. Then click the Agent Prompts textarea and fill it with this EXACT prompt text (copy verbatim, do not shorten):
+
+${generatedPrompt}
+
+5. Click "Save & update". Return done when saved.`;
+      return runAgentLoop(tabId, goal, onStep);
+    }
+
     case 'click_element': {
       const target = intent.params?.target || norm;
       const r = await quickClick(tabId, target, onStep);
