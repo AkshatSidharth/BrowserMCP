@@ -891,6 +891,9 @@ const emptyState  = document.getElementById('emptyState');
 function setStatus(state, text) {
   statusDot.className = `status-dot ${state}`;
   statusText.textContent = text;
+  // Drive orb colour via body class
+  document.body.classList.remove('listening', 'running');
+  if (state === 'running') document.body.classList.add('running');
 }
 
 function addStep(text, type = 'active') {
@@ -995,6 +998,7 @@ let _finalText   = '';
 
 function resetMicBtn() {
   micBtn.classList.remove('listening');
+  document.body.classList.remove('listening');
   micIcon.textContent  = '🎤';
   micLabel.textContent = 'Hold to speak';
 }
@@ -1020,6 +1024,8 @@ async function startRecording() {
   isRecording = true;
   _finalText  = '';
   micBtn.classList.add('listening');
+  document.body.classList.add('listening');
+  document.body.classList.remove('running');
   micIcon.textContent  = '⏹';
   micLabel.textContent = 'Release to send';
   setStatus('running', 'Listening…');
