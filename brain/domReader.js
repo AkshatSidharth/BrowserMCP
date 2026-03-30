@@ -1,39 +1,93 @@
 'use strict';
 
 /**
- * domReader.js — Chrome DevTools MCP-inspired element extraction
+ * domReader.js — Playwright ARIA snapshot + DOM enrichment
  *
- * PRIMARY source: page.accessibility.snapshot()  (Chrome DevTools MCP: takeSnapshot)
- *   → semantic role, computed accessible name, checked/selected state, current value
- *   → never relies on raw DOM order or fragile CSS selectors
+ * Primary source: page.ariaSnapshot() (Playwright ≥ 1.46)
+ *   → returns a YAML-like accessibility tree with roles, names, states, values
+ *   → more stable than the deprecated page.accessibility.snapshot()
  *
- * SECONDARY: getBoundingClientRect per element
- *   → centre (cx, cy) for coordinate clicking fallback
+ * Fallback: page.accessibility.snapshot() (older Playwright) then DOM scan
  *
- * Each element carries enough info for the LLM to:
- *   a) reference it by index (→ Playwright locator via role+name — always fresh)
- *   b) fall back to click_xy using screen coordinates
+ * Coordinate lookup: locator.boundingBox() per element
+ *   → reliable even with CSS transforms, sticky headers, overflow scroll
+ *   → used for click_xy fallback when locator-based click fails
+ *
+ * React Select / custom dropdown tagging:
+ *   → detects [class*="select__control"] and similar patterns
+ *   → marks them as react-select so agent uses click+type, not native select
+ *
+ * Viewport filtering:
+ *   → elements outside the visible viewport are excluded
  */
 
-// ─── A11y tree walker ─────────────────────────────────────────────────────────
-// Roles that represent interactive / meaningful elements
+// ─── ARIA snapshot parser ────────────────────────────────────────────────────
+// page.ariaSnapshot() returns a YAML-like string. Parse it into element objects.
+
 const INTERACTIVE_ROLES = new Set([
   'button','link','menuitem','menuitemcheckbox','menuitemradio',
   'option','tab','treeitem','row',
   'textbox','searchbox','combobox','listbox','spinbutton',
   'checkbox','radio','switch','slider','scrollbar',
   'cell','columnheader','rowheader',
-  'figure','img',  // sometimes clickable
 ]);
 
-// Roles that are purely structural — skip unless they have a name
 const SKIP_UNNAMED = new Set([
   'generic','group','list','listitem','presentation','none',
   'region','main','navigation','complementary','banner','contentinfo',
-  'article','section','separator','LineBreak',
+  'article','section','separator','linebreak','document',
 ]);
 
-function walkA11yTree(node, results, depth = 0) {
+/**
+ * Parse the YAML-like ariaSnapshot string into flat element list.
+ * Format: "- role \"name\" [state] [level=N] [value=\"v\"]"
+ */
+function parseAriaSnapshot(yaml) {
+  const elements = [];
+  if (!yaml) return elements;
+
+  for (const rawLine of yaml.split('\n')) {
+    const line = rawLine.trim();
+    if (!line || line === '-') continue;
+
+    // Strip leading "- "
+    const content = line.replace(/^-\s*/, '');
+
+    // Extract role (first word)
+    const roleMatch = content.match(/^(\w[\w-]*)/);
+    if (!roleMatch) continue;
+    const role = roleMatch[1].toLowerCase();
+
+    // Extract name (quoted string after role)
+    const nameMatch = content.match(/^[\w-]+\s+"([^"]*?)"/);
+    const name = nameMatch ? nameMatch[1].trim() : '';
+
+    // Extract value  [value="..."] or val="..."
+    const valueMatch = content.match(/\[value="([^"]*?)"\]/);
+    const value = valueMatch ? valueMatch[1].trim().slice(0, 60) : '';
+
+    // Extract state
+    let state = '';
+    if (/\[checked\]/.test(content))   state = '✓';
+    if (/\[unchecked\]/.test(content)) state = '○';
+    if (/\[selected\]/.test(content))  state = '●';
+    if (/\[pressed\]/.test(content))   state = '▼';
+    if (/\[disabled\]/.test(content))  state += '🚫';
+    if (/\[expanded\]/.test(content))  state += '▾';
+
+    const isInteractive = INTERACTIVE_ROLES.has(role);
+    const hasName = name.length > 0;
+
+    if (isInteractive || (hasName && !SKIP_UNNAMED.has(role))) {
+      elements.push({ role, name: name.slice(0, 100), state, value,
+        locator: buildLocator(role, name) });
+    }
+  }
+  return elements;
+}
+
+// ─── Accessibility tree walker (fallback) ────────────────────────────────────
+function walkA11yTree(node, results) {
   if (!node) return;
   const role  = (node.role  || '').toLowerCase();
   const name  = (node.name  || '').trim();
@@ -43,7 +97,6 @@ function walkA11yTree(node, results, depth = 0) {
   const hasName       = name.length > 0;
 
   if (isInteractive || (hasName && !SKIP_UNNAMED.has(role))) {
-    // Checked/selected state (Chrome DevTools MCP: a11y checked property)
     let state = '';
     if (node.checked === true)  state = '✓';
     if (node.checked === false) state = '○';
@@ -52,23 +105,17 @@ function walkA11yTree(node, results, depth = 0) {
     if (node.disabled === true) state += '🚫';
 
     results.push({
-      index:   results.length,
       role,
       name:    name.slice(0, 100),
       state,
       value:   value.slice(0, 60),
-      // Playwright locator expression — always fresh, never stale
       locator: buildLocator(role, name),
     });
   }
-
-  for (const child of node.children || []) {
-    walkA11yTree(child, results, depth + 1);
-  }
+  for (const child of node.children || []) walkA11yTree(child, results);
 }
 
 function buildLocator(role, name) {
-  // Map a11y roles → Playwright getByRole roles
   const roleMap = {
     textbox: 'textbox', searchbox: 'searchbox', combobox: 'combobox',
     button: 'button', link: 'link', checkbox: 'checkbox', radio: 'radio',
@@ -76,45 +123,165 @@ function buildLocator(role, name) {
     spinbutton: 'spinbutton', slider: 'slider', listbox: 'listbox',
     menuitemcheckbox: 'menuitemcheckbox', menuitemradio: 'menuitemradio',
   };
-  const pwRole = roleMap[role] || role;
-  return { pwRole, name };
+  return { pwRole: roleMap[role] || role, name };
 }
 
-// ─── Bounding box enrichment ─────────────────────────────────────────────────
-// For coordinate fallback: find the centre of each element by its accessible name
+// ─── Coordinate lookup via locator.boundingBox() ────────────────────────────
+// More reliable than getBoundingClientRect inside page.evaluate because
+// Playwright resolves transforms, iframes, and scrolled positions correctly.
 async function enrichWithCoords(page, elements) {
-  if (!elements.length) return elements;
+  const vp = page.viewportSize() || { width: 1280, height: 800 };
 
-  // Batch: for each element, try to find its bounding rect in the DOM
-  const coords = await page.evaluate((items) => {
-    return items.map(({ role, name }) => {
-      // Escape name for safe use in CSS attribute selectors.
-      // a11y names from page content can contain quotes and backslashes.
-      const safe = name.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
-      // Try ARIA role + accessible-name heuristics (no :has-text — not native CSS)
-      const selectors = [
-        `[role="${role}"][aria-label="${safe}"]`,
-        `[role="${role}"][title="${safe}"]`,
-        `[aria-label="${safe}"]`,
-        `[placeholder="${safe}"]`,
-        `[title="${safe}"]`,
+  for (const el of elements) {
+    try {
+      const { pwRole, name } = el.locator;
+      const strategies = [
+        () => page.getByRole(pwRole, { name, exact: true }).first(),
+        () => page.getByRole(pwRole, { name, exact: false }).first(),
+        () => page.getByLabel(name, { exact: false }).first(),
+        () => page.getByPlaceholder(name, { exact: false }).first(),
+        () => page.getByText(name, { exact: true }).first(),
       ];
-      for (const sel of selectors) {
+
+      let box = null;
+      for (const strategy of strategies) {
         try {
-          const el = document.querySelector(sel);
-          if (el) {
-            const r = el.getBoundingClientRect();
-            if (r.width > 0 && r.height > 0) {
-              return { cx: Math.round(r.left + r.width / 2), cy: Math.round(r.top + r.height / 2) };
+          const loc = strategy();
+          box = await loc.boundingBox({ timeout: 600 });
+          if (box) break;
+        } catch { /* try next */ }
+      }
+
+      if (box) {
+        const cx = Math.round(box.x + box.width  / 2);
+        const cy = Math.round(box.y + box.height / 2);
+        // Only keep elements visible in the viewport
+        if (cx >= 0 && cy >= 0 && cx <= vp.width && cy <= vp.height) {
+          el.cx = cx;
+          el.cy = cy;
+        } else {
+          el._offscreen = true;
+        }
+      }
+    } catch { /* element not found — leave coords null */ }
+  }
+
+  return elements;
+}
+
+// ─── React Select / custom dropdown detection ────────────────────────────────
+// Detects React Select and similar custom searchable dropdowns.
+// Marks them with type:"react-select" so the agent knows to click+type, not
+// use the native "select" action.
+async function tagCustomDropdowns(page, elements) {
+  try {
+    const customDropdowns = await page.evaluate(() => {
+      const selectors = [
+        '[class*="select__control"]',          // React Select
+        '[class*="react-select"]',
+        '[class*="Select__control"]',
+        '[class*="css-"][class*="control"]',   // emotion-styled React Select
+        '.select2-selection',                   // Select2
+        '[data-testid*="select"]',
+        '[aria-haspopup="listbox"]:not(select)',// custom listbox triggers
+      ];
+      const found = [];
+      for (const sel of selectors) {
+        for (const el of document.querySelectorAll(sel)) {
+          const r = el.getBoundingClientRect();
+          if (!r.width || !r.height) continue;
+          // Get label from sibling/parent label element
+          let label = el.getAttribute('aria-label') || '';
+          if (!label) {
+            const container = el.closest('[class*="form"], [class*="field"], .form-group');
+            if (container) {
+              const lbl = container.querySelector('label');
+              if (lbl) label = lbl.textContent.trim();
             }
           }
-        } catch { /* invalid selector, skip */ }
+          // Get current selected value
+          const valueEl = el.querySelector('[class*="single-value"], [class*="placeholder"], .select2-selection__rendered');
+          const value = valueEl ? valueEl.textContent.trim() : '';
+          found.push({
+            label: label || 'custom dropdown',
+            value,
+            cx: Math.round(r.left + r.width  / 2),
+            cy: Math.round(r.top  + r.height / 2),
+          });
+        }
       }
-      return { cx: null, cy: null };
+      return found;
     });
-  }, elements.map(e => ({ role: e.role, name: e.name }))).catch(() => elements.map(() => ({ cx: null, cy: null })));
 
-  return elements.map((el, i) => ({ ...el, cx: coords[i]?.cx, cy: coords[i]?.cy }));
+    // Add custom dropdowns not already in elements list
+    const existingNames = new Set(elements.map(e => e.name.toLowerCase()));
+    for (const dd of customDropdowns) {
+      const key = dd.label.toLowerCase();
+      if (!existingNames.has(key)) {
+        elements.push({
+          role: 'combobox',
+          name: dd.label,
+          state: '',
+          value: dd.value,
+          type: 'react-select',  // ← agent must click+type, NOT use "select" action
+          cx: dd.cx,
+          cy: dd.cy,
+          locator: buildLocator('combobox', dd.label),
+        });
+        existingNames.add(key);
+      } else {
+        // Enrich existing entry with react-select tag
+        const existing = elements.find(e => e.name.toLowerCase() === key);
+        if (existing) existing.type = 'react-select';
+      }
+    }
+  } catch { /* page.evaluate failed — skip */ }
+
+  return elements;
+}
+
+// ─── DOM fallback scan ───────────────────────────────────────────────────────
+async function domFallbackScan(page) {
+  try {
+    return await page.$$eval(
+      'input:not([type="hidden"]):not([disabled]), textarea:not([disabled]),' +
+      'select:not([disabled]), button:not([disabled]), [role="button"],' +
+      '[role="checkbox"], [role="switch"], [role="tab"], [role="option"],' +
+      'a[href]',
+      (els) => {
+        const vw = window.innerWidth, vh = window.innerHeight;
+        return els.map(el => {
+          const rect = el.getBoundingClientRect();
+          if (!rect.width || !rect.height) return null;
+          const cx = Math.round(rect.left + rect.width  / 2);
+          const cy = Math.round(rect.top  + rect.height / 2);
+          if (cx < 0 || cy < 0 || cx > vw || cy > vh) return null; // off-screen
+
+          let name = el.getAttribute('aria-label') || el.getAttribute('placeholder')
+            || el.getAttribute('title') || el.getAttribute('alt')
+            || (el.innerText || el.textContent || '').trim().slice(0, 100);
+          if (!name && el.id) {
+            const lbl = document.querySelector(`label[for="${CSS.escape(el.id)}"]`);
+            if (lbl) name = lbl.innerText.trim();
+          }
+          if (!name) name = el.getAttribute('name') || el.getAttribute('type') || el.tagName.toLowerCase();
+
+          const role = el.getAttribute('role') || {
+            INPUT: el.type === 'checkbox' ? 'checkbox' : el.type === 'radio' ? 'radio' : 'textbox',
+            TEXTAREA: 'textbox', SELECT: 'combobox', BUTTON: 'button', A: 'link',
+          }[el.tagName] || 'generic';
+
+          const checked = (el.type === 'checkbox' || el.type === 'radio' || role === 'checkbox')
+            ? (el.checked || el.getAttribute('aria-checked') === 'true' ? '✓' : '○') : '';
+          const value = el.tagName === 'SELECT'
+            ? (el.options[el.selectedIndex]?.text || '') : (el.value || '');
+
+          return { role, name: name.trim(), state: checked,
+            value: value.trim().slice(0, 60), cx, cy, _fromDom: true };
+        }).filter(Boolean);
+      }
+    );
+  } catch { return []; }
 }
 
 // ─── Main extractor ───────────────────────────────────────────────────────────
@@ -122,67 +289,47 @@ async function extractPageContext(page) {
   const url   = page.url();
   const title = await page.title().catch(() => '');
 
-  // 1. A11y tree — primary source (Chrome DevTools MCP: takeSnapshot)
   let elements = [];
-  try {
-    const a11y = await page.accessibility.snapshot({ interestingOnly: true });
-    if (a11y) walkA11yTree(a11y, elements);
-  } catch { /* accessibility API unavailable */ }
 
-  // 2. DOM fallback — pick up elements not surfaced in a11y tree
-  //    (e.g. custom React components, canvas overlays, hidden-label inputs)
+  // 1. Primary: page.ariaSnapshot() (Playwright ≥ 1.46)
+  let usedAriaSnapshot = false;
   try {
-    const domElements = await page.$$eval(
-      'input:not([type="hidden"]):not([disabled]), textarea:not([disabled]),' +
-      'select:not([disabled]), button:not([disabled]), [role="button"],' +
-      '[role="checkbox"], [role="switch"], [role="tab"], [role="option"],' +
-      'a[href]',
-      (els) => els.map(el => {
-        const rect = el.getBoundingClientRect();
-        if (!rect.width || !rect.height) return null;
-        // Compute accessible name
-        let name = el.getAttribute('aria-label') || el.getAttribute('placeholder')
-          || el.getAttribute('title') || el.getAttribute('alt')
-          || (el.innerText || el.textContent || '').trim().slice(0, 100);
-        if (!name && el.id) {
-          const lbl = document.querySelector(`label[for="${CSS.escape(el.id)}"]`);
-          if (lbl) name = lbl.innerText.trim();
-        }
-        if (!name) name = el.getAttribute('name') || el.getAttribute('type') || el.tagName.toLowerCase();
-        const role = el.getAttribute('role') || {
-          INPUT: el.type === 'checkbox' ? 'checkbox' : el.type === 'radio' ? 'radio' : 'textbox',
-          TEXTAREA: 'textbox', SELECT: 'combobox', BUTTON: 'button', A: 'link',
-        }[el.tagName] || 'generic';
-        const checked = (el.type === 'checkbox' || el.type === 'radio' || role === 'checkbox')
-          ? (el.checked || el.getAttribute('aria-checked') === 'true' ? '✓' : '○') : '';
-        const value = el.tagName === 'SELECT'
-          ? (el.options[el.selectedIndex]?.text || '') : (el.value || '');
-        return {
-          role, name: name.trim(), state: checked,
-          value: value.trim().slice(0, 60),
-          cx: Math.round(rect.left + rect.width / 2),
-          cy: Math.round(rect.top + rect.height / 2),
-          _fromDom: true,
-        };
-      }).filter(Boolean)
-    );
-
-    // Merge: add DOM elements not already covered by a11y tree (by name match)
-    const a11yNames = new Set(elements.map(e => e.name.toLowerCase()));
-    for (const domEl of domElements) {
-      const n = domEl.name.toLowerCase();
-      if (!a11yNames.has(n) && n.length > 0) {
-        elements.push({ ...domEl, index: elements.length, locator: buildLocator(domEl.role, domEl.name) });
-        a11yNames.add(n);
-      }
+    const yaml = await page.ariaSnapshot({ timeout: 5000 }).catch(() => null);
+    if (yaml) {
+      elements = parseAriaSnapshot(yaml);
+      usedAriaSnapshot = true;
     }
-  } catch { /* DOM eval failed */ }
+  } catch { /* not available */ }
 
-  // 3. Enrich a11y elements with coordinates
+  // 2. Fallback: page.accessibility.snapshot()
+  if (!usedAriaSnapshot) {
+    try {
+      const a11y = await page.accessibility.snapshot({ interestingOnly: true });
+      if (a11y) walkA11yTree(a11y, elements);
+    } catch { /* unavailable */ }
+  }
+
+  // 3. DOM fallback: pick up elements the a11y tree missed
+  const domElements = await domFallbackScan(page);
+  const a11yNames = new Set(elements.map(e => e.name.toLowerCase()));
+  for (const domEl of domElements) {
+    const n = domEl.name.toLowerCase();
+    if (!a11yNames.has(n) && n.length > 0) {
+      elements.push({ ...domEl, locator: buildLocator(domEl.role, domEl.name) });
+      a11yNames.add(n);
+    }
+  }
+
+  // 4. Tag React Select / custom dropdowns
+  elements = await tagCustomDropdowns(page, elements);
+
+  // 5. Enrich with coordinates via locator.boundingBox()
   elements = await enrichWithCoords(page, elements);
 
-  // Re-index
-  elements = elements.map((e, i) => ({ ...e, index: i }));
+  // 6. Drop off-screen elements (no coords) and re-index
+  elements = elements
+    .filter(e => !e._offscreen && (e.cx != null || e._fromDom))
+    .map((e, i) => ({ ...e, index: i }));
 
   return { url, title, elements };
 }
@@ -190,13 +337,14 @@ async function extractPageContext(page) {
 // ─── Formatter ────────────────────────────────────────────────────────────────
 function formatContext(ctx) {
   const lines = ctx.elements.map(e => {
-    const coord = (e.cx != null && e.cy != null) ? `  @(${e.cx},${e.cy})` : '';
-    const val   = e.value ? `  val:"${e.value}"` : '';
-    return `  [${e.index}] ${e.state || '·'} ${e.role}  "${e.name}"${val}${coord}`;
+    const coord   = (e.cx != null && e.cy != null) ? `  @(${e.cx},${e.cy})` : '';
+    const val     = e.value ? `  val:"${e.value}"` : '';
+    const tag     = e.type  ? `  [${e.type}]`      : '';
+    return `  [${e.index}] ${e.state || '·'} ${e.role}  "${e.name}"${val}${tag}${coord}`;
   }).join('\n');
 
   return `Page: ${ctx.title}\nURL: ${ctx.url}\n\n` +
-    `Interactive elements  [idx] state role "name" val @coords:\n` +
+    `Interactive elements  [idx] state role "name" val [type] @coords:\n` +
     (lines || '  (none found)');
 }
 

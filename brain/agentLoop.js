@@ -200,7 +200,8 @@ async function fillByLocator(page, locator, value, fallbackX, fallbackY) {
 // ─── 5. System prompt ─────────────────────────────────────────────────────────
 const SYSTEM_PROMPT = `
 You are an autonomous browser agent. You see a screenshot + list of interactive elements.
-Each element: [index] state role "name" val @(cx,cy)
+Each element: [index] state role "name" val [type] @(cx,cy)
+  - [type] is optional. If present, "[react-select]" means it is a custom searchable dropdown — NEVER use the "select" action on it. Instead: click it → type to search → click the matching option.
 
 You return ONE JSON action per turn.
 
