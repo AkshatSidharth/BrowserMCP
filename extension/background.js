@@ -53,6 +53,43 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       return true;
     }
 
+    case 'CDP_CLICK': {
+      // Dispatch real browser mouse events via Chrome DevTools Protocol.
+      // These are identical to physical mouse clicks — React, shadow DOM, etc. all respond.
+      const { tabId, x, y } = msg;
+      const attachTarget = { tabId };
+
+      const dispatchMouse = (type, btn = 'none', clickCount = 0) =>
+        new Promise((res, rej) => {
+          chrome.debugger.sendCommand(attachTarget, 'Input.dispatchMouseEvent', {
+            type, x, y,
+            button: btn,
+            clickCount,
+            modifiers: 0,
+          }, () => {
+            if (chrome.runtime.lastError) rej(new Error(chrome.runtime.lastError.message));
+            else res();
+          });
+        });
+
+      const doClick = async () => {
+        await chrome.debugger.attach(attachTarget, '1.3');
+        try {
+          await dispatchMouse('mouseMoved');
+          await dispatchMouse('mousePressed', 'left', 1);
+          await dispatchMouse('mouseReleased', 'left', 1);
+        } finally {
+          // Always detach even if click fails
+          await new Promise(res => chrome.debugger.detach(attachTarget, res));
+        }
+      };
+
+      doClick()
+        .then(() => sendResponse({ ok: true }))
+        .catch(err => sendResponse({ ok: false, error: err.message }));
+      return true;
+    }
+
     default:
       break;
   }

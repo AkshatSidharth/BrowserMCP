@@ -366,6 +366,13 @@ async function sendAction(tabId, action) {
   return chrome.tabs.sendMessage(tabId, { type: 'EXECUTE_ACTION', ...action });
 }
 
+// ── CDP click — real browser mouse events via chrome.debugger ────────────────
+// Falls back to content-script click if CDP fails (e.g. pdf pages, detach race).
+async function cdpClick(tabId, x, y) {
+  const resp = await chrome.runtime.sendMessage({ type: 'CDP_CLICK', tabId, x, y });
+  if (!resp?.ok) throw new Error(resp?.error || 'CDP_CLICK failed');
+}
+
 // ── Quick click — no GPT loop, just fuzzy snapshot match ─────────────────────
 function fuzzyScore(name, needle) {
   const n = name.toLowerCase(), q = needle.toLowerCase();
@@ -393,9 +400,22 @@ async function quickClick(tabId, target, onStep) {
 
   if (!best || bestScore < 35) return null; // not found — caller falls back to agent loop
 
+  // Find coords for CDP click
+  const bestLine = lines.find(l => l.trimStart().startsWith(`[${best.idx}]`));
+  const coordM = bestLine?.match(/@\((\d+),(\d+)\)/);
+
   onStep({ type: 'step', text: `Clicking "${best.name}"…` });
-  const result = await sendAction(tabId, { action: 'click', index: best.idx });
-  if (!result?.success) return null;
+  let clicked = false;
+  if (coordM) {
+    try {
+      await cdpClick(tabId, +coordM[1], +coordM[2]);
+      clicked = true;
+    } catch { /* fall through to JS click */ }
+  }
+  if (!clicked) {
+    const result = await sendAction(tabId, { action: 'click', index: best.idx });
+    if (!result?.success) return null;
+  }
 
   await new Promise(r => setTimeout(r, 800));
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
@@ -575,10 +595,40 @@ async function runAgentLoop(tabId, goal, onStep, opts = {}) {
       continue;
     }
 
-    // All other actions → content script
+    // All other actions → CDP for clicks (real browser events), content script for the rest
     let result = { success: false, message: 'no response' };
     try {
-      result = await sendAction(tabId, action);
+      if (action.action === 'click') {
+        // Extract @(cx,cy) coordinates for this element from snapshot text
+        const coordLine = snapshot.text.split('\n')
+          .find(l => action.index != null && l.trimStart().startsWith(`[${action.index}]`));
+        const cm = coordLine?.match(/@\((\d+),(\d+)\)/);
+        if (cm) {
+          // Primary: CDP real mouse event
+          try {
+            await cdpClick(tabId, +cm[1], +cm[2]);
+            result = { success: true, message: `CDP click at (${cm[1]},${cm[2]})` };
+          } catch (cdpErr) {
+            // Fallback: synthetic content-script click
+            onStep({ type: 'step', text: `Step ${step}: CDP failed (${cdpErr.message}) — using JS click…` });
+            result = await sendAction(tabId, action);
+          }
+        } else {
+          // No coords in snapshot — use content-script click
+          result = await sendAction(tabId, action);
+        }
+      } else if (action.action === 'click_xy') {
+        // Primary: CDP real mouse event
+        try {
+          await cdpClick(tabId, action.x, action.y);
+          result = { success: true, message: `CDP click at (${action.x},${action.y})` };
+        } catch (cdpErr) {
+          onStep({ type: 'step', text: `Step ${step}: CDP failed (${cdpErr.message}) — using JS click…` });
+          result = await sendAction(tabId, action);
+        }
+      } else {
+        result = await sendAction(tabId, action);
+      }
     } catch (err) {
       result = { success: false, message: err.message };
     }
@@ -626,6 +676,12 @@ async function execDirect(tabId, actions, onStep) {
     if (action.action === 'navigate') {
       await chrome.tabs.update(tabId, { url: action.url });
       await waitForTabLoad(tabId);
+    } else if (action.action === 'click_xy') {
+      try { await cdpClick(tabId, action.x, action.y); }
+      catch { await sendAction(tabId, action); }
+      await new Promise(r => setTimeout(r, 1000));
+      const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+      if (tab?.status === 'loading') await waitForTabLoad(tab.id);
     } else {
       await sendAction(tabId, action);
       const isNavAction = ['click','click_xy','press_on','press','select'].includes(action.action);
