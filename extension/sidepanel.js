@@ -342,6 +342,25 @@ async function runAgentLoop(tabId, goal, onStep) {
     if (action.action === 'done')   return { success: true,  message: action.message };
     if (action.action === 'failed') return { success: false, message: action.message };
 
+    // Repeat-action guard: if GPT picks identical action 3 times in a row, force click_xy fallback
+    const recentSame = history.slice(-3).filter(h => h.startsWith(desc.slice(0, 30))).length;
+    if (recentSame >= 2 && ['click','click_xy','fill'].includes(action.action)) {
+      const stored = action.action === 'click' && action.index != null
+        ? await getSnapshot(tabId).then(s => {
+            const m = s.text.split('\n').find(l => l.startsWith(`[${action.index}]`));
+            const c = m?.match(/@\((\d+),(\d+)\)/);
+            return c ? { x: +c[1], y: +c[2] } : null;
+          }).catch(() => null)
+        : null;
+      if (stored) {
+        onStep({ type: 'step', text: `Step ${step}: retrying via coordinates (${stored.x},${stored.y})…` });
+        await sendAction(tabId, { action: 'click_xy', x: stored.x, y: stored.y });
+        history.push(`click_xy fallback at (${stored.x},${stored.y})`);
+        await new Promise(r => setTimeout(r, 1000));
+        continue;
+      }
+    }
+
     // Navigate: use chrome.tabs.update (content script can't navigate cross-origin)
     if (action.action === 'navigate') {
       await chrome.tabs.update(tabId, { url: action.url });

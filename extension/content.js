@@ -229,9 +229,8 @@ async function executeAction(msg) {
             const live = document.elementFromPoint(stored.cx, stored.cy);
             if (live) {
               live.focus();
-              ['mousedown','mouseup','click'].forEach(t =>
-                live.dispatchEvent(new MouseEvent(t, { bubbles:true, cancelable:true, clientX: stored.cx, clientY: stored.cy }))
-              );
+              live.click(); // native click — works with React/Vue/Angular
+              live.dispatchEvent(new MouseEvent('click', { bubbles:true, cancelable:true, clientX: stored.cx, clientY: stored.cy }));
               return { success: true, message: `Clicked [${index}] via coordinates (stale fallback)` };
             }
           }
@@ -239,9 +238,13 @@ async function executeAction(msg) {
         }
         el.scrollIntoView({ block: 'nearest' });
         el.focus();
-        ['mousedown', 'mouseup', 'click'].forEach(t =>
-          el.dispatchEvent(new MouseEvent(t, { bubbles: true, cancelable: true }))
-        );
+        // Primary: el.click() — triggers React/Angular synthetic events
+        el.click();
+        // Also fire pointer+mouse sequence for frameworks that need it
+        for (const t of ['pointerdown','mousedown','pointerup','mouseup','click']) {
+          el.dispatchEvent(new (t.startsWith('pointer') ? PointerEvent : MouseEvent)(t,
+            { bubbles: true, cancelable: true, pointerId: 1 }));
+        }
         return { success: true, message: `Clicked "${_els[index]?.name}"` };
       }
 
@@ -332,9 +335,11 @@ async function executeAction(msg) {
         const el = document.elementFromPoint(x, y);
         if (!el) return { success: false, message: `No element at (${x},${y})` };
         el.focus();
-        ['mousedown', 'mouseup', 'click'].forEach(t =>
-          el.dispatchEvent(new MouseEvent(t, { bubbles: true, cancelable: true, clientX: x, clientY: y }))
-        );
+        el.click();
+        for (const t of ['pointerdown','mousedown','pointerup','mouseup','click']) {
+          el.dispatchEvent(new (t.startsWith('pointer') ? PointerEvent : MouseEvent)(t,
+            { bubbles: true, cancelable: true, clientX: x, clientY: y, pointerId: 1 }));
+        }
         return { success: true, message: `Clicked at (${x},${y})` };
       }
 
