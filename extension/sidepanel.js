@@ -1098,60 +1098,40 @@ textInput.addEventListener('keydown', e => {
 settingsBtn.addEventListener('click', () => chrome.runtime.openOptionsPage());
 document.getElementById('openOptionsLink')?.addEventListener('click', () => chrome.runtime.openOptionsPage());
 
-// Refresh — re-injects content script, re-checks API key, resets state
-// Hold for 1.5s → full extension reload (nuclear option)
-let _refreshHoldTimer = null;
+// Refresh — click: soft refresh (re-inject content script, reset state)
 const refreshBtn = document.getElementById('refreshBtn');
 
-async function softRefresh() {
+refreshBtn.addEventListener('click', async () => {
   refreshBtn.classList.add('spinning');
   refreshBtn.disabled = true;
   try {
-    // 1. Re-inject content script into current active tab
+    // Re-inject content script into current active tab
     const tabId = await getActiveTabId();
     if (tabId) {
       await chrome.scripting.executeScript({ target: { tabId }, files: ['content.js'] }).catch(() => {});
     }
-    // 2. Re-check API key + update status
+    // Re-check API key + reset status
     await init();
-    // 3. Reset running state if stuck
+    // Unstick running state if agent got stuck
     if (_isRunning) {
       _abortLoop = true;
       _isRunning = false;
       textInput.disabled = false;
       sendBtn.textContent = '↵';
       sendBtn.className = 'action-btn send-btn';
+      document.body.classList.remove('running', 'listening');
     }
     clearSteps();
-    addStep('Content script refreshed ✓', 'success');
+    addStep('Refreshed ✓  content script re-injected', 'success');
     speak('Refreshed.');
+  } catch (e) {
+    addStep(`Refresh error: ${e.message}`, 'error');
   } finally {
     setTimeout(() => {
       refreshBtn.classList.remove('spinning');
       refreshBtn.disabled = false;
     }, 700);
   }
-}
-
-refreshBtn.addEventListener('mousedown', () => {
-  _refreshHoldTimer = setTimeout(() => {
-    _refreshHoldTimer = null;
-    // Full extension reload
-    refreshBtn.classList.add('spinning');
-    setTimeout(() => chrome.runtime.reload(), 300);
-  }, 1500);
-});
-
-refreshBtn.addEventListener('mouseup', () => {
-  if (_refreshHoldTimer) {
-    clearTimeout(_refreshHoldTimer);
-    _refreshHoldTimer = null;
-    softRefresh();
-  }
-});
-
-refreshBtn.addEventListener('mouseleave', () => {
-  if (_refreshHoldTimer) { clearTimeout(_refreshHoldTimer); _refreshHoldTimer = null; }
 });
 
 // ── Init ──────────────────────────────────────────────────────────────────────
