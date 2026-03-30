@@ -126,63 +126,71 @@ Generate the complete system prompt.`;
   );
 }
 
-// ── Intent parser ─────────────────────────────────────────────────────────────
-const INTENT_PROMPT = `
-You are a browser automation intent classifier. Parse the user's voice/text command.
+// ── Orchestrator — sees current page BEFORE deciding what to do ───────────────
+// Replaces blind intent parser. One GPT call with screenshot + elements → action plan.
+const ORCHESTRATOR_PROMPT = `
+You are a browser automation orchestrator. You see a screenshot + element list of the current page, plus the user's voice command.
 
-Return ONE of these JSON actions:
-- {"action":"navigate","params":{"url":"https://..."}}                                     ← go to a website URL
-- {"action":"click_element","params":{"target":"..."}}                                     ← click ONE named element already on the page
-- {"action":"create_agent","params":{"name":"...","purpose":"...","company":"...","industry":"..."}} ← create a Kapture voice agent
-- {"action":"smart_act","params":{"command":"..."}}                                        ← multi-step task
-- {"action":"scroll_act","params":{"direction":"down"}}                                    ← scroll page
-- {"action":"media_act","params":{"operation":"pause"}}                                    ← media control
-- {"action":"fill_input","params":{"field":"...","value":""}}                              ← fill a form field
+Element format: [idx] state role "name" val:"value" [react-select] @(cx,cy)
 
-NAVIGATE rules (highest priority — check these FIRST):
-1. "open X" / "go to X" / "open X website" / "launch X" where X is a consumer app or website → navigate to that URL.
-   Examples: "open BigBasket" → {"action":"navigate","params":{"url":"https://www.bigbasket.com"}}
-             "open Amazon" → https://www.amazon.in
-             "open Flipkart" → https://www.flipkart.com
-             "open Zomato" → https://www.zomato.com
-             "open Swiggy" → https://www.swiggy.com
-             "open YouTube" → https://www.youtube.com
-             "open Google" → https://www.google.com
-             "open Instagram" → https://www.instagram.com
-             "open Myntra" → https://www.myntra.com
-             "open Nykaa" → https://www.nykaa.com
-             "go back" / "go back to X" → use navigate with the URL of that page if known, else smart_act
-2. "open X.com" or any explicit domain → navigate to that URL
-3. scroll up/down/top/bottom → scroll_act
-4. play/pause/mute/volume → media_act
-5. "my number/email/password is X" → fill_input
-6. "click on X" / "select X" / "go to X tab" / "change X to Y" / "switch to Y" / "set X to Y"
-   where X/Y is an element name already visible on the current page → click_element with target=Y
-6b. "create a voice agent" / "make a new agent" / "create a bot for X" / "build a voice bot for [company] to [purpose]" → create_agent
-    Extract: name (e.g. "Customer Support Bot"), purpose (what the bot does), company (client name), industry (From Scratch / E-commerce / BFSI / Healthcare / Travel / Energy)
-    If not specified: name="Voice Assistant", industry="From Scratch"
-7. "login to <CLIENT>" (Kapture CRM partner login) → smart_act:
-   "Kapture partner login for <CLIENT>: navigate https://adjetter.com/admin/home.html, sign in with Google if needed, click LOGIN TO PARTNER EMPLOYEE, select admin server https://in.kapturecrm.com, select domain <CLIENT> from React Select dropdown (click control → type name → click option), select employee, fill Remarks with 5+ words, click Submit"
-8. "open Kapture" / "Kapture admin" → navigate to https://adjetter.com/admin/home.html
-9. Everything else → smart_act with the full command text
+Decide the MINIMUM set of actions to fulfill the command based on what you ACTUALLY SEE on screen.
 
-KEY DISTINCTION: "open BigBasket" = go to bigbasket.com (navigate). "login to BigBasket" = Kapture CRM partner login (smart_act).
+Return ONE of these JSON types:
 
+1. DIRECT — element is visible on screen, 1–3 actions max:
+   {"type":"direct","actions":[{"action":"click","index":N,"description":"..."}]}
+   {"type":"direct","actions":[{"action":"fill","index":N,"value":"text","description":"..."},{"action":"press_on","index":N,"key":"Enter","description":"..."}]}
+
+2. NAVIGATE — go to a website:
+   {"type":"navigate","url":"https://..."}
+
+3. SCROLL — scroll the page:
+   {"type":"scroll","direction":"down"}
+
+4. MEDIA — control video/audio:
+   {"type":"media","operation":"pause"}
+
+5. CREATE_AGENT — create a Kapture voice agent (multi-page wizard):
+   {"type":"create_agent","name":"...","purpose":"...","company":"...","industry":"From Scratch"}
+
+6. LOOP — genuinely complex multi-page task that needs many steps:
+   {"type":"loop","goal":"concise single-sentence goal"}
+
+DECISION RULES (apply in order):
+- "open X website / app" → navigate
+- "scroll" → scroll
+- "pause/play/mute" → media
+- "create voice agent / make a bot for X" → create_agent
+- If the target element is VISIBLE in the screenshot or element list → direct (click/fill it)
+- "change X to Y" / "switch to Y" / "select Y" / "click X" / "go to X tab" → direct
+- "save" / "submit" / "update" → direct click on Save/Submit button, THAT'S IT — stop after
+- Login flows / checkout flows / multi-page forms → loop
+- Anything else you can see on screen → direct
+
+NEVER use "loop" if the answer is a single click or fill on the current page.
 Return ONLY valid JSON. No markdown.
 `.trim();
 
-async function parseIntent(text, context = '') {
-  const user = context ? `Recent:\n${context}\n\nCommand: "${text}"` : `Command: "${text}"`;
+async function orchestrate(text, snapshot, screenshot) {
+  const userMsg = [
+    screenshot ? { type: 'image_url', image_url: { url: screenshot, detail: 'high' } } : null,
+    { type: 'text', text: `User command: "${text}"\n\nCurrent page:\n${snapshot.text}\n\nWhat actions are needed?` },
+  ].filter(Boolean);
+
   try {
     const raw = await callOpenAI(
-      [{ role: 'system', content: INTENT_PROMPT }, { role: 'user', content: user }],
-      { maxTokens: 200, json: true }
+      [{ role: 'system', content: ORCHESTRATOR_PROMPT }, { role: 'user', content: userMsg }],
+      { maxTokens: 400, json: true }
     );
     return JSON.parse(raw);
   } catch {
-    return { action: 'smart_act', params: { command: text } };
+    return { type: 'loop', goal: text };
   }
 }
+
+// Keep old intent parser only for create_agent detection before snapshot is available
+const CREATE_AGENT_RE = /\b(create|make|build|new)\b.*(voice\s*agent|bot|agent)\b/i;
+const LOGIN_RE = /\blogin\s+to\s+(\w[\w\s]*)/i;
 
 // ── Agent system prompt ───────────────────────────────────────────────────────
 const AGENT_PROMPT = `
@@ -606,90 +614,148 @@ async function runAgentLoop(tabId, goal, onStep, opts = {}) {
 // ── Top-level command runner ──────────────────────────────────────────────────
 const _cmdHistory = [];
 function pushHistory(t) { _cmdHistory.push(t); if (_cmdHistory.length > 5) _cmdHistory.shift(); }
-function getContext()    { return _cmdHistory.slice(-3).map((c, i) => `${i+1}. "${c}"`).join('\n'); }
+
+// Execute a sequence of direct actions (no loop needed)
+async function execDirect(tabId, actions, onStep) {
+  for (const action of actions) {
+    const desc = action.description || action.action;
+    onStep({ type: 'step', text: desc });
+    const NARRATE_ACTIONS = ['click','click_xy','fill','select','press_on','type'];
+    if (NARRATE_ACTIONS.includes(action.action)) speak(desc);
+
+    if (action.action === 'navigate') {
+      await chrome.tabs.update(tabId, { url: action.url });
+      await waitForTabLoad(tabId);
+    } else {
+      await sendAction(tabId, action);
+      const isNavAction = ['click','click_xy','press_on','press','select'].includes(action.action);
+      await new Promise(r => setTimeout(r, isNavAction ? 1000 : 300));
+      const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+      if (tab?.status === 'loading') await waitForTabLoad(tab.id);
+    }
+  }
+  const lastDesc = actions[actions.length - 1]?.description || 'Done';
+  return { success: true, message: lastDesc };
+}
 
 async function runCommand(text, onStep) {
-  const norm   = normalizeText(text.trim());
-  const ctx    = getContext();
+  const norm = normalizeText(text.trim());
   pushHistory(norm);
-
-  onStep({ type: 'step', text: `Parsing: "${norm}"` });
-
-  const intent = await parseIntent(norm, ctx);
-  onStep({ type: 'step', text: `Intent: ${intent.action}` });
 
   const tabId = await getActiveTabId();
   if (!tabId) return { success: false, message: 'No active browser tab.' };
 
-  switch (intent.action) {
-    case 'create_agent': {
-      const { name, purpose, company, industry } = intent.params || {};
-      onStep({ type: 'step', text: `Generating prompt for "${name || 'agent'}"…` });
-      speak(`Generating a ${industry || 'voice'} agent prompt for ${company || 'the company'}. One moment.`);
-      let generatedPrompt = '';
-      try {
-        generatedPrompt = await generateVoiceBotPrompt({ name, purpose, company, industry });
-        onStep({ type: 'step', text: 'Prompt generated — starting agent creation flow…' });
-      } catch (e) {
-        generatedPrompt = `You are ${name || 'a voice assistant'} for ${company || 'the company'}. ${purpose || 'Help users with their queries.'}`;
-      }
-      // Use INJECT_PROMPT marker — full text injected via opts.injectText (bypasses GPT 512 token limit)
-      const agentName = name || 'Voice Assistant';
-      const agentIndustry = industry || 'From Scratch';
-      const agentPurpose = purpose || 'voice assistant for customer support';
-      const goal = `Create a new Kapture voice agent:
-Agent Name: "${agentName}", Industry: "${agentIndustry}", Type: Single, Purpose: "${agentPurpose}"
-
-Steps:
-1. Go to AI Agents page → click "Create New" button.
-2. PAGE 1 (industry cards): Click the "${agentIndustry}" card. Wait for page to advance automatically.
-3. PAGE 2 (agent details): Fill Agent Name with "${agentName}". Keep Single selected. Fill Purpose textarea with "${agentPurpose}". Click "Start Building".
-4. PAGE 3 (Model tab): Click "Chat GPT" LLM model card. Click the Agent Prompts textarea → fill with value "INJECT_PROMPT".
-5. Click "Save & update". Return done when saved.`;
-      return runAgentLoop(tabId, goal, onStep, { injectText: generatedPrompt });
-    }
-
-    case 'click_element': {
-      const target = intent.params?.target || norm;
-      const r = await quickClick(tabId, target, onStep);
-      if (r) return r;
-      // Not found on first glance — fall back to agent loop
-      return runAgentLoop(tabId, `Click on "${target}"`, onStep);
-    }
-
-    case 'navigate': {
-      await chrome.tabs.update(tabId, { url: intent.params.url });
+  // ── Fast paths that don't need page context ──────────────────────────────
+  // Website navigation
+  const SITES = { amazon:'https://www.amazon.in', flipkart:'https://www.flipkart.com',
+    bigbasket:'https://www.bigbasket.com', zomato:'https://www.zomato.com',
+    swiggy:'https://www.swiggy.com', youtube:'https://www.youtube.com',
+    google:'https://www.google.com', instagram:'https://www.instagram.com',
+    myntra:'https://www.myntra.com', nykaa:'https://www.nykaa.com',
+    kapture:'https://adjetter.com/admin/home.html',
+    meesho:'https://www.meesho.com', ajio:'https://www.ajio.com',
+  };
+  const openMatch = norm.match(/^(?:open|launch|go to|navigate to)\s+(\w+)/i);
+  if (openMatch) {
+    const site = openMatch[1].toLowerCase();
+    const url = SITES[site] || (norm.includes('.com') || norm.includes('.in') ? `https://${openMatch[1]}` : null);
+    if (url) {
+      onStep({ type: 'step', text: `Opening ${openMatch[1]}…` });
+      await chrome.tabs.update(tabId, { url });
       await waitForTabLoad(tabId);
-      return { success: true, message: `Navigated to ${intent.params.url}` };
+      return { success: true, message: `Opened ${openMatch[1]}` };
+    }
+  }
+
+  // Scroll
+  if (/^scroll\s*(up|down|top|bottom)/i.test(norm)) {
+    const dir = norm.match(/up|down|top|bottom/i)?.[0]?.toLowerCase() || 'down';
+    await sendAction(tabId, { action: 'scroll', direction: dir, amount: 500 });
+    return { success: true, message: `Scrolled ${dir}` };
+  }
+
+  // Media
+  const mediaMap = { pause:'pause', play:'play', mute:'mute', unmute:'unmute', stop:'pause' };
+  const mediaKey = Object.keys(mediaMap).find(k => norm.toLowerCase().startsWith(k));
+  if (mediaKey) {
+    const op = mediaMap[mediaKey];
+    const scripts = {
+      pause: `document.querySelectorAll('video,audio').forEach(v=>v.pause())`,
+      play:  `document.querySelectorAll('video,audio').forEach(v=>v.play())`,
+      mute:  `document.querySelectorAll('video,audio').forEach(v=>v.muted=true)`,
+      unmute:`document.querySelectorAll('video,audio').forEach(v=>v.muted=false)`,
+    };
+    await sendAction(tabId, { action: 'evaluate', script: scripts[op] });
+    return { success: true, message: `Media: ${op}` };
+  }
+
+  // Create agent
+  if (CREATE_AGENT_RE.test(norm)) {
+    // Extract details with a lightweight GPT call
+    const extractRaw = await callOpenAI([
+      { role: 'system', content: 'Extract fields from this voice command as JSON: {"name":"...","purpose":"...","company":"...","industry":"From Scratch|E-commerce|BFSI|Healthcare|Travel|Energy"}. Return ONLY JSON.' },
+      { role: 'user', content: norm }
+    ], { maxTokens: 150, json: true }).catch(() => '{}');
+    const p = JSON.parse(extractRaw || '{}');
+    const { name, purpose, company, industry } = p;
+    onStep({ type: 'step', text: `Generating prompt for ${company || 'agent'}…` });
+    speak(`Generating prompt for ${company || 'the agent'}. One moment.`);
+    let generatedPrompt = '';
+    try {
+      generatedPrompt = await generateVoiceBotPrompt({ name, purpose, company, industry });
+    } catch {
+      generatedPrompt = `You are ${name || 'a voice assistant'} for ${company || 'the company'}. ${purpose || 'Help users.'}`;
+    }
+    onStep({ type: 'step', text: 'Prompt ready — starting creation flow…' });
+    const agentName = name || 'Voice Assistant';
+    const agentIndustry = industry || 'From Scratch';
+    const agentPurpose = purpose || 'voice assistant for customer support';
+    const goal = `Create Kapture voice agent: Name="${agentName}", Industry="${agentIndustry}", Type=Single, Purpose="${agentPurpose}". Steps: 1) AI Agents → Create New. 2) Click "${agentIndustry}" industry card. 3) Fill Name="${agentName}", Purpose="${agentPurpose}", click Start Building. 4) Click Chat GPT card, click Agent Prompts textarea, fill with "INJECT_PROMPT", click Save & update. Done.`;
+    return runAgentLoop(tabId, goal, onStep, { injectText: generatedPrompt });
+  }
+
+  // Kapture partner login
+  const loginMatch = norm.match(LOGIN_RE);
+  if (loginMatch) {
+    const client = loginMatch[1].trim();
+    const goal = `Kapture partner login for ${client}: navigate https://adjetter.com/admin/home.html, sign in with Google if needed, click LOGIN TO PARTNER EMPLOYEE, select admin server https://in.kapturecrm.com, click Domain Name react-select → type "${client}" → click match, select employee, fill Remarks 5+ words, click Submit.`;
+    return runAgentLoop(tabId, goal, onStep);
+  }
+
+  // ── Context-aware orchestration: take page snapshot FIRST, then decide ───
+  onStep({ type: 'step', text: 'Reading page…' });
+  let snapshot = { text: '' };
+  try { snapshot = await getSnapshot(tabId); } catch {}
+  const screenshot = await takeScreenshot();
+
+  onStep({ type: 'step', text: 'Thinking…' });
+  const plan = await orchestrate(norm, snapshot, screenshot);
+
+  switch (plan.type) {
+    case 'navigate':
+      await chrome.tabs.update(tabId, { url: plan.url });
+      await waitForTabLoad(tabId);
+      return { success: true, message: `Navigated to ${plan.url}` };
+
+    case 'scroll':
+      await sendAction(tabId, { action: 'scroll', direction: plan.direction || 'down', amount: 500 });
+      return { success: true, message: `Scrolled ${plan.direction}` };
+
+    case 'media': {
+      const scripts = { pause:`document.querySelectorAll('video,audio').forEach(v=>v.pause())`, play:`document.querySelectorAll('video,audio').forEach(v=>v.play())`, mute:`document.querySelectorAll('video,audio').forEach(v=>v.muted=true)`, unmute:`document.querySelectorAll('video,audio').forEach(v=>v.muted=false)` };
+      const sc = scripts[plan.operation];
+      if (sc) await sendAction(tabId, { action: 'evaluate', script: sc });
+      return { success: true, message: `Media: ${plan.operation}` };
     }
 
-    case 'scroll_act': {
-      const dir = intent.params.direction || 'down';
-      await sendAction(tabId, { action: 'scroll', direction: dir, amount: 400 });
-      return { success: true, message: `Scrolled ${dir}` };
-    }
+    case 'direct':
+      return execDirect(tabId, plan.actions || [], onStep);
 
-    case 'media_act': {
-      const op = intent.params.operation || 'toggle';
-      const scripts = {
-        pause:       `document.querySelectorAll('video,audio').forEach(v=>v.pause())`,
-        play:        `document.querySelectorAll('video,audio').forEach(v=>v.play())`,
-        toggle:      `document.querySelectorAll('video,audio').forEach(v=>v.paused?v.play():v.pause())`,
-        mute:        `document.querySelectorAll('video,audio').forEach(v=>v.muted=true)`,
-        unmute:      `document.querySelectorAll('video,audio').forEach(v=>v.muted=false)`,
-        volume_up:   `document.querySelectorAll('video,audio').forEach(v=>v.volume=Math.min(1,v.volume+0.1))`,
-        volume_down: `document.querySelectorAll('video,audio').forEach(v=>v.volume=Math.max(0,v.volume-0.1))`,
-      };
-      if (scripts[op]) await sendAction(tabId, { action: 'evaluate', script: scripts[op] });
-      return { success: true, message: `Media: ${op}` };
-    }
-
-    case 'fill_input':
-      return runAgentLoop(tabId,
-        `Fill the ${intent.params.field} field with "${intent.params.value}"`, onStep);
+    case 'loop':
+      return runAgentLoop(tabId, plan.goal || norm, onStep);
 
     default:
-      return runAgentLoop(tabId, intent.params?.command || norm, onStep);
+      return runAgentLoop(tabId, norm, onStep);
   }
 }
 
