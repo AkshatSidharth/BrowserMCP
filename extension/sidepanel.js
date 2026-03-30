@@ -157,15 +157,20 @@ Return ONE of these JSON types:
    {"type":"loop","goal":"concise single-sentence goal"}
 
 DECISION RULES (apply in order):
-- "open X website / app" → navigate
+- "open X" / "login to X" / "go to X" where X is a website (flipkart, amazon, bigbasket, zomato, etc.) → navigate to that site's URL
 - "scroll" → scroll
 - "pause/play/mute" → media
 - "create voice agent / make a bot for X" → create_agent
 - If the target element is VISIBLE in the screenshot or element list → direct (click/fill it)
 - "change X to Y" / "switch to Y" / "select Y" / "click X" / "go to X tab" → direct
 - "save" / "submit" / "update" → direct click on Save/Submit button, THAT'S IT — stop after
-- Login flows / checkout flows / multi-page forms → loop
+- Login flows / checkout flows / multi-page forms on the CURRENT site → loop
 - Anything else you can see on screen → direct
+
+KEY DISTINCTION:
+- "login to flipkart" = navigate to https://www.flipkart.com then use loop to sign in — NOT Kapture login
+- "login to amazon" = navigate to https://www.amazon.in
+- Kapture partner login is ONLY when user says "kapture", "CRM", "partner login", "adjetter"
 
 NEVER use "loop" if the answer is a single click or fill on the current page.
 Return ONLY valid JSON. No markdown.
@@ -190,7 +195,9 @@ async function orchestrate(text, snapshot, screenshot) {
 
 // Keep old intent parser only for create_agent detection before snapshot is available
 const CREATE_AGENT_RE = /\b(create|make|build|new)\b.*(voice\s*agent|bot|agent)\b/i;
-const LOGIN_RE = /\blogin\s+to\s+(\w[\w\s]*)/i;
+// Only match Kapture/CRM partner login — NOT generic "login to Amazon/Flipkart" etc.
+const KAPTURE_SITES = ['kapture','kapturecrm','adjetter','crm','partner','admin'];
+const LOGIN_RE = /\b(?:login|log\s*in)\s+to\s+(kapture|kapturecrm|adjetter|crm|partner\s+employee|\w+\s+crm)\b/i;
 
 // ── Agent system prompt ───────────────────────────────────────────────────────
 const AGENT_PROMPT = `
@@ -711,7 +718,8 @@ async function runCommand(text, onStep) {
     kapture:'https://adjetter.com/admin/home.html',
     meesho:'https://www.meesho.com', ajio:'https://www.ajio.com',
   };
-  const openMatch = norm.match(/^(?:open|launch|go to|navigate to)\s+(\w+)/i);
+  // "open X" OR "login to X" where X is a known site → just navigate (login handled by loop after)
+  const openMatch = norm.match(/^(?:open|launch|go to|navigate to|login to|log in to|sign in to)\s+(\w+)/i);
   if (openMatch) {
     const site = openMatch[1].toLowerCase();
     const url = SITES[site] || (norm.includes('.com') || norm.includes('.in') ? `https://${openMatch[1]}` : null);
@@ -719,6 +727,11 @@ async function runCommand(text, onStep) {
       onStep({ type: 'step', text: `Opening ${openMatch[1]}…` });
       await chrome.tabs.update(tabId, { url });
       await waitForTabLoad(tabId);
+      // If command was "login to X", kick off a login loop on that site
+      if (/^(?:login to|log\s*in to|sign in to)/i.test(norm)) {
+        onStep({ type: 'step', text: `Now logging into ${openMatch[1]}…` });
+        return runAgentLoop(tabId, `Log into ${openMatch[1]} — click Sign In / Login button, fill in credentials if asked.`, onStep);
+      }
       return { success: true, message: `Opened ${openMatch[1]}` };
     }
   }
@@ -770,9 +783,10 @@ async function runCommand(text, onStep) {
     return runAgentLoop(tabId, goal, onStep, { injectText: generatedPrompt });
   }
 
-  // Kapture partner login
+  // Kapture partner login — only when explicitly mentioning Kapture/CRM/partner
   const loginMatch = norm.match(LOGIN_RE);
-  if (loginMatch) {
+  const COMMON_SITES_RE = /\b(flipkart|amazon|bigbasket|swiggy|zomato|myntra|nykaa|meesho|ajio|instagram|youtube|google|netflix)\b/i;
+  if (loginMatch && !COMMON_SITES_RE.test(norm)) {
     const client = loginMatch[1].trim();
     const goal = `Kapture partner login for ${client}: navigate https://adjetter.com/admin/home.html, sign in with Google if needed, click LOGIN TO PARTNER EMPLOYEE, select admin server https://in.kapturecrm.com, click Domain Name react-select → type "${client}" → click match, select employee, fill Remarks 5+ words, click Submit.`;
     return runAgentLoop(tabId, goal, onStep);
