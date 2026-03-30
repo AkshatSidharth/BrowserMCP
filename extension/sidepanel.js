@@ -240,7 +240,8 @@ GENERAL RULES:
 3. If goal is already done (item in cart, page loaded, form submitted, option selected), return done immediately.
 4. After clicking ANY "Save", "Save & update", "Submit", "Update", or "Confirm" button → return done IMMEDIATELY. Do NOT re-read the page or click again.
 5. Never repeat the same failed action twice. Try click_xy fallback using @(cx,cy) coordinates.
-5. Never ask the user for values. If a value is unknown, use what makes sense from context.
+5. For LOGIN CREDENTIALS (phone number, email, password, OTP, username) — if the value was NOT stated in the goal, return ask immediately: {"action":"ask","question":"What is your [phone/email/password]?"}. NEVER guess or invent credentials.
+5b. For all other unknown values (names, addresses, search terms already in goal) — use what's in the goal.
 
 SEARCH BARS (Google, Amazon, Flipkart, Myntra, etc.):
 6. Find the main search input (large text box near the top). Fill it with the query, then press_on the same index with key "Enter".
@@ -550,7 +551,13 @@ async function runAgentLoop(tabId, goal, onStep, opts = {}) {
 
     if (action.action === 'done')   { speak(action.message || 'Done.'); return { success: true,  message: action.message }; }
     if (action.action === 'failed') { speak(action.message || 'I ran into an issue.'); return { success: false, message: action.message }; }
-    if (action.action === 'ask')    { speak(action.question || 'What should I do next?'); return { success: false, message: `Agent asks: ${action.question}` }; }
+    if (action.action === 'ask') {
+      const q = action.question || 'What should I do next?';
+      speak(q);
+      // Surface the question visibly so user knows to respond via mic
+      onStep({ type: 'step', text: `❓ ${q}` });
+      return { success: false, message: `Needs info: ${q}` };
+    }
 
     // Prompt injection: replace placeholder value with full generated text (bypasses GPT token limits)
     if (opts.injectText && action.action === 'fill' &&
