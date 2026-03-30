@@ -215,11 +215,15 @@ async function sendAction(tabId, action) {
 }
 
 // ── Agent loop ────────────────────────────────────────────────────────────────
+let _abortLoop = false;
+
 async function runAgentLoop(tabId, goal, onStep) {
+  _abortLoop = false;
   const history = [];
-  const MAX = 25;
+  const MAX = 20;
 
   for (let step = 1; step <= MAX; step++) {
+    if (_abortLoop) return { success: false, message: 'Stopped by user.' };
     onStep({ type: 'step', text: `Step ${step}: reading page…` });
     await new Promise(r => setTimeout(r, 400));
 
@@ -266,6 +270,7 @@ async function runAgentLoop(tabId, goal, onStep) {
     }
 
     history.push(`${desc}: ${result?.message || '?'}`);
+    if (_abortLoop) return { success: false, message: 'Stopped by user.' };
     await new Promise(r => setTimeout(r, 600));
 
     // Check if page is now loading (action triggered navigation)
@@ -375,14 +380,22 @@ function onStep(info) {
   _lastStepEl = addStep(info.text, 'active');
 }
 
+let _isRunning = false;
+
 async function submitCommand(text) {
   if (!text.trim()) return;
+  if (_isRunning) { addStep('Already running — stop first.', 'error'); return; }
+  _isRunning = true;
+  _abortLoop = false;
   clearSteps();
   transcriptEl.textContent = text;
   transcriptEl.className = 'transcript-text';
   setStatus('running', 'Running…');
   micBtn.classList.add('disabled');
   micBtn.disabled = true;
+  sendBtn.textContent = '■';
+  sendBtn.title = 'Stop';
+  textInput.disabled = true;
 
   try {
     const result = await runCommand(text, onStep);
@@ -394,79 +407,28 @@ async function submitCommand(text) {
       result.success ? 'success' : 'error');
     setStatus('ready', result.success ? 'Ready' : 'Failed');
   } catch (err) {
-    addStep(`Error: ${err.message}`, 'error');
-    setStatus('error', 'Error');
+    if (_abortLoop) {
+      addStep('Stopped.', 'error');
+      setStatus('ready', 'Ready');
+    } else {
+      addStep(`Error: ${err.message}`, 'error');
+      setStatus('error', 'Error');
+    }
   } finally {
+    _isRunning = false;
     micBtn.classList.remove('disabled');
     micBtn.disabled = false;
+    sendBtn.textContent = '↵';
+    sendBtn.title = '';
+    textInput.disabled = false;
   }
 }
 
-// ── Voice — Web Speech API (works in extension sidepanel without getUserMedia) ─
-// Falls back to MediaRecorder + Whisper if Web Speech API is unavailable.
+// ── Voice — runs in the active tab's content script (normal page context)
+// The extension sidepanel cannot use mic directly; content scripts can.
 
-const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
-let recognition   = null;
-let isRecording   = false;
-let interimText   = '';
-
-function initSpeechRecognition() {
-  if (!SpeechRecognition) return false;
-  recognition = new SpeechRecognition();
-  recognition.continuous      = false;
-  recognition.interimResults  = true;
-  recognition.lang            = 'en-IN'; // English + Hindi/Hinglish
-
-  recognition.onstart = () => {
-    isRecording = true;
-    micBtn.classList.add('listening');
-    micIcon.textContent  = '⏹';
-    micLabel.textContent = 'Release to send';
-    setStatus('running', 'Listening…');
-    transcriptEl.textContent = '…';
-    transcriptEl.className   = 'transcript-text interim';
-  };
-
-  recognition.onresult = (e) => {
-    interimText = '';
-    let final = '';
-    for (const result of e.results) {
-      if (result.isFinal) final += result[0].transcript;
-      else interimText += result[0].transcript;
-    }
-    transcriptEl.textContent = final || interimText || '…';
-    transcriptEl.className   = final ? 'transcript-text' : 'transcript-text interim';
-  };
-
-  recognition.onerror = (e) => {
-    isRecording = false;
-    resetMicBtn();
-    if (e.error === 'not-allowed') {
-      addStep('Mic blocked. Go to chrome://settings/content/microphone and allow.', 'error');
-      setStatus('error', 'Mic blocked');
-    } else if (e.error !== 'no-speech') {
-      addStep(`Speech error: ${e.error}`, 'error');
-      setStatus('error', e.error);
-    } else {
-      setStatus('ready', 'Ready');
-    }
-  };
-
-  recognition.onend = () => {
-    isRecording = false;
-    resetMicBtn();
-    const text = transcriptEl.textContent.trim();
-    if (text && text !== '…' && text !== '—') {
-      submitCommand(text);
-    } else {
-      setStatus('ready', 'Ready');
-      transcriptEl.textContent = '—';
-      transcriptEl.className   = 'transcript-text';
-    }
-  };
-
-  return true;
-}
+let isRecording  = false;
+let _finalText   = '';
 
 function resetMicBtn() {
   micBtn.classList.remove('listening');
@@ -474,32 +436,91 @@ function resetMicBtn() {
   micLabel.textContent = 'Hold to speak';
 }
 
-const hasSpeechAPI = initSpeechRecognition();
+async function getActiveTabId() {
+  const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+  return tab?.id ?? null;
+}
 
-// Hold to record
-micBtn.addEventListener('mousedown', () => {
-  if (micBtn.classList.contains('disabled') || isRecording) return;
-  if (hasSpeechAPI) {
-    interimText = '';
-    try { recognition.start(); } catch { /* already started */ }
-  } else {
-    addStep('Web Speech API not available. Try Chrome browser.', 'error');
+async function startRecording() {
+  if (isRecording) return;
+  const tabId = await getActiveTabId();
+  if (!tabId) { addStep('No active tab found.', 'error'); return; }
+  // Ensure content script is injected
+  try {
+    await chrome.scripting.executeScript({ target: { tabId }, files: ['content.js'] });
+  } catch {}
+  const res = await chrome.tabs.sendMessage(tabId, { type: 'START_SPEECH' }).catch(e => ({ success: false, message: e.message }));
+  if (!res?.success) {
+    addStep(res?.message === 'no-api' ? 'Web Speech API not available in this tab.' : `Mic error: ${res?.message}`, 'error');
+    return;
+  }
+  isRecording = true;
+  _finalText  = '';
+  micBtn.classList.add('listening');
+  micIcon.textContent  = '⏹';
+  micLabel.textContent = 'Release to send';
+  setStatus('running', 'Listening…');
+  transcriptEl.textContent = '…';
+  transcriptEl.className   = 'transcript-text interim';
+}
+
+async function stopRecording() {
+  if (!isRecording) return;
+  const tabId = await getActiveTabId();
+  if (tabId) await chrome.tabs.sendMessage(tabId, { type: 'STOP_SPEECH' }).catch(() => {});
+}
+
+// Receive speech events from content script
+chrome.runtime.onMessage.addListener((msg) => {
+  if (msg.type === 'SPEECH_INTERIM') {
+    transcriptEl.textContent = msg.text || '…';
+    transcriptEl.className   = 'transcript-text interim';
+    if (msg.text) _finalText = msg.text;
+  } else if (msg.type === 'SPEECH_ERROR') {
+    isRecording = false;
+    resetMicBtn();
+    if (msg.error === 'not-allowed') {
+      addStep('Mic blocked — allow microphone for this site when Chrome asks.', 'error');
+      setStatus('error', 'Mic blocked');
+    } else if (msg.error !== 'no-speech') {
+      addStep(`Speech error: ${msg.error}`, 'error');
+      setStatus('error', msg.error);
+    } else {
+      setStatus('ready', 'Ready');
+    }
+  } else if (msg.type === 'SPEECH_END') {
+    isRecording = false;
+    resetMicBtn();
+    const text = (_finalText || transcriptEl.textContent).trim();
+    if (text && text !== '…' && text !== '—') {
+      transcriptEl.className = 'transcript-text';
+      submitCommand(text);
+    } else {
+      setStatus('ready', 'Ready');
+      transcriptEl.textContent = '—';
+      transcriptEl.className   = 'transcript-text';
+    }
+    _finalText = '';
   }
 });
 
+// Hold to record
+micBtn.addEventListener('mousedown', () => {
+  if (micBtn.classList.contains('disabled')) return;
+  startRecording();
+});
+
 micBtn.addEventListener('mouseup', () => {
-  if (!isRecording) return;
-  if (hasSpeechAPI) {
-    try { recognition.stop(); } catch { /* already stopped */ }
-  }
+  stopRecording();
 });
 
 // Touch support
 micBtn.addEventListener('touchstart', e => { e.preventDefault(); micBtn.dispatchEvent(new MouseEvent('mousedown')); });
 micBtn.addEventListener('touchend',   e => { e.preventDefault(); micBtn.dispatchEvent(new MouseEvent('mouseup')); });
 
-// Text input
+// Text input / Stop button
 sendBtn.addEventListener('click', () => {
+  if (_isRunning) { _abortLoop = true; return; }
   const t = textInput.value.trim();
   if (t) { textInput.value = ''; submitCommand(t); }
 });

@@ -354,6 +354,41 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
       case 'PING':
         sendResponse({ ok: true });
         break;
+      case 'START_SPEECH': {
+        const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+        if (!SR) { sendResponse({ success: false, message: 'no-api' }); break; }
+        if (window._bmcpRec) { try { window._bmcpRec.stop(); } catch {} }
+        const rec = new SR();
+        window._bmcpRec = rec;
+        rec.continuous     = false;
+        rec.interimResults = true;
+        rec.lang           = 'en-IN';
+        rec.onresult = (e) => {
+          let interim = '', final = '';
+          for (const r of e.results) {
+            if (r.isFinal) final += r[0].transcript;
+            else interim += r[0].transcript;
+          }
+          chrome.runtime.sendMessage({ type: 'SPEECH_INTERIM', text: final || interim });
+        };
+        rec.onerror = (e) => {
+          chrome.runtime.sendMessage({ type: 'SPEECH_ERROR', error: e.error });
+        };
+        rec.onend = () => {
+          window._bmcpRec = null;
+          chrome.runtime.sendMessage({ type: 'SPEECH_END' });
+        };
+        try { rec.start(); sendResponse({ success: true }); }
+        catch (e) { sendResponse({ success: false, message: e.message }); }
+        break;
+      }
+      case 'STOP_SPEECH': {
+        if (window._bmcpRec) {
+          try { window._bmcpRec.stop(); } catch {}
+        }
+        sendResponse({ success: true });
+        break;
+      }
       default:
         sendResponse({ success: false, message: `Unknown: ${msg.type}` });
     }
