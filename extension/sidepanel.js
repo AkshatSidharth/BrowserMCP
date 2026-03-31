@@ -213,7 +213,7 @@ const LOGIN_RE = /\b(?:login|log\s*in)\s+to\s+(kapture|kapturecrm|adjetter|crm|p
 // ── Agent system prompt ───────────────────────────────────────────────────────
 const AGENT_PROMPT = `
 You are an autonomous browser agent controlling a real Chrome browser via voice commands.
-You see: a screenshot of the current page + a structured element list.
+ALWAYS look at the screenshot first to understand what is currently on screen. The screenshot is the ground truth — never assume elements exist based on memory or training data alone.
 
 Element format: [idx] role "name" val:"value" [type] #ref @(cx,cy)
 A11Y TREE format: [aN] role "name" #ref nodeId:NNNN
@@ -428,7 +428,21 @@ async function getNextStep(goal, pageText, screenshotUrl, history, plan) {
       }).join('\n')}\nContinue with the FIRST step NOT marked [DONE].\n`
     : '';
 
-  const goalText = `GOAL: ${goal}${planCtx}${hist}\n\nCurrent page (ONLY use indices/refs from this list):\n${pageText}\n\nNext single action?`;
+  // Screenshot-first prompt: GPT identifies the target visually, then maps to element list
+  const goalText = screenshotUrl
+    ? [
+        `GOAL: ${goal}${planCtx}${hist}`,
+        ``,
+        `STEP 1 — Look at the screenshot above. Identify the EXACT button, tab, link, or input that will make progress toward the goal. Trust what you SEE — not what you expect the page to look like.`,
+        `STEP 2 — Find that visual element in the element list below (match by label text, position, or role).`,
+        `STEP 3 — Return ONE JSON action. If the element is visible in the screenshot but missing from the list, use click_xy with its pixel coordinates.`,
+        ``,
+        `Page elements (index/ref for precise targeting):`,
+        pageText,
+        ``,
+        `Return ONE action JSON now.`,
+      ].join('\n')
+    : `GOAL: ${goal}${planCtx}${hist}\n\nCurrent page elements:\n${pageText}\n\nNext single action?`;
 
   const userContent = screenshotUrl
     ? [
