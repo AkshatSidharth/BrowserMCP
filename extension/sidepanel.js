@@ -348,21 +348,22 @@ KAPTURE TOOL CREATION — standalone commands (outside full agent creation flow)
        a) Fill "Function Name" input with an appropriate name.
        b) Fill "Description" textarea with what the function does.
        c) For the Function Code editor (CodeMirror — NOT a regular textarea):
-          Use evaluate to set code directly — example (replace YOUR_CODE_HERE with actual code using single quotes):
-          {"action":"evaluate","script":"const code='YOUR_CODE_HERE'; const cm=document.querySelector('.CodeMirror')?.CodeMirror; if(cm){cm.setValue(code);return 'ok-cm';} const ce=document.querySelector('.cm-content,[contenteditable=true]'); if(ce){ce.focus();document.execCommand('selectAll',false,null);document.execCommand('insertText',false,code);return 'ok-ce';} return 'not found';","description":"Write code into editor"}
-          For multi-line code use \\n to represent newlines in the string.
+          Use evaluate to write code — tries CodeMirror, Ace, then cm6 fallback:
+          {"action":"evaluate","script":"const code='LINE1\\nLINE2\\nLINE3'; try{const cm=document.querySelector('.CodeMirror')?.CodeMirror;if(cm){cm.setValue(code);return 'codemirror';}}catch(e){} try{const ace=window.ace||document.querySelector('.ace_editor')?.env?.editor;if(ace){ace.setValue(code,-1);return 'ace';}}catch(e){} try{const c=document.querySelector('.cm-content');if(c){c.focus();document.execCommand('selectAll');document.execCommand('insertText',false,code);return 'cm6';}}catch(e){} return 'no editor found';","description":"Write code into editor"}
+          Replace LINE1\\nLINE2 etc. with the actual code using \\n for newlines.
        d) Click "Add Function" button.
     ⚠️ NEVER click "Generate Prompt" on the Model tab for this — that is for agent prompts only.
 27. "create a post call tool" / "post action" → Tools tab (if not active) → Post Actions sub-tab (if not active) → Create New → same Custom Integration flow as above.
 28. "create an in-prompt function" / "in-prompt tool" → Tools tab (if not active) → In-Prompt Functions sub-tab (if not active) → Create New → same Custom Integration flow as above.
 29. "add knowledge base" / "upload document" → Tools tab (if not active) → Knowledge Base sub-tab (if not active) → upload button.
 
-CODE EDITORS (CodeMirror / Monaco / Ace — any page):
-30. Code editors render in a canvas/div and are NOT regular textareas — fill and click_xy do NOT work.
-    Identify them by: dark background with syntax-highlighted code, line numbers on the left.
-    To write code into them, ALWAYS use evaluate with this pattern (use single quotes, \\n for newlines):
-    {"action":"evaluate","script":"const code='LINE1\\nLINE2\\nLINE3'; const cm=document.querySelector('.CodeMirror')?.CodeMirror; if(cm){cm.setValue(code);return 'ok';} const ce=document.querySelector('.cm-content,[contenteditable=true]'); if(ce){ce.focus();document.execCommand('selectAll',false,null);document.execCommand('insertText',false,code);return 'ok';} return 'editor not found';","description":"Write code into editor"}
-    Never attempt to fill or click individual lines — always replace the full content via evaluate.
+CODE EDITORS (CodeMirror / Ace / Monaco — any page):
+30. Code editors are NOT regular textareas — fill and click_xy do NOT work on them.
+    Identify them by: dark background, syntax highlighting, line numbers on left.
+    To write code, use evaluate. Try ALL of these in one script until one works:
+    {"action":"evaluate","script":"const code='YOUR_CODE_LINE1\\nYOUR_CODE_LINE2'; try{ const cm=document.querySelector('.CodeMirror')?.CodeMirror; if(cm){cm.setValue(code);return 'codemirror';} } catch(e){} try{ const ace=window.ace||document.querySelector('.ace_editor')?.env?.editor; if(ace){ace.setValue(code,-1);return 'ace';} } catch(e){} try{ const cm6=document.querySelector('.cm-content'); if(cm6){cm6.focus();document.execCommand('selectAll');document.execCommand('insertText',false,code);return 'cm6';} } catch(e){} return 'no editor found';","description":"Write code into editor"}
+    Replace YOUR_CODE_LINE1 etc. with the actual code lines, using \\n between lines.
+    Never attempt to fill or click individual lines inside an editor.
 
 STUCK DETECTION:
 32. If snapshot looks identical to previous step, try scrolling or a different element.
@@ -875,10 +876,10 @@ async function runAgentLoop(tabId, goal, onStep, opts = {}) {
     const descNorm = desc.toLowerCase().trim().slice(0, 60);
     const recentDescs = history.slice(-5).map(h => h.split(':')[0].toLowerCase().trim().slice(0, 60));
     const descRepeatCount = recentDescs.filter(d => d === descNorm).length;
-    if (descRepeatCount >= 2 && ['click','click_xy'].includes(action.action)) {
+    if (descRepeatCount >= 2 && !['wait','scroll','navigate','done','failed','ask'].includes(action.action)) {
       onStep({ type: 'step', text: `Step ${step}: loop detected ("${desc}" repeated) — forcing re-think…` });
       history.push(`[LOOP] "${desc}" repeated ${descRepeatCount + 1}×; taking different approach||${actionKey}`);
-      goal = goal + `\n\nSTUCK ALERT: "${desc}" was attempted ${descRepeatCount + 1} times without progress. The element may already be active/selected. Look at the screenshot — find a DIFFERENT next action (e.g. click a sub-tab, interact with page content, or scroll).`;
+      goal = goal + `\n\nSTUCK ALERT: "${desc}" was attempted ${descRepeatCount + 1} times without progress. The previous approach is not working. Try a COMPLETELY DIFFERENT method — different selector, different action type, different element.`;
       prevSnapshotSig = '';
       sameSnapshotCount = 0;
       continue;
