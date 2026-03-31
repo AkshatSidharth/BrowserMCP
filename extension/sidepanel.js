@@ -933,21 +933,19 @@ async function runAgentLoop(tabId, goal, onStep, opts = {}) {
 
     invalidateSnapCache(tabId);
 
-    history.push(`${desc}: ${result?.success ? 'ok' : result?.message || '?'}||${actionKey}`);
-    if (_abortLoop) return { success: false, message: 'Stopped by user.' };
-
     // Auto-done after any Save/Submit/Update click — don't loop after saving
     if (result?.success && action.action === 'click') {
       const nm = (action.description || '').toLowerCase();
       if (/save|submit|update|confirm/.test(nm)) {
         speak('Saved.');
+        history.push(`${desc}: ok (auto-done after save)||${actionKey}`);
         return { success: true, message: `Done — ${action.description}` };
       }
     }
 
-    // Smart wait: clicks/press may open modals or trigger navigation — wait for DOM to settle
+    // Smart wait: clicks/press may open modals or trigger SPA navigation — wait for DOM to settle
     const isNavAction = ['click','click_xy','press_on','press','select'].includes(action.action);
-    await new Promise(r => setTimeout(r, isNavAction ? 1200 : 400));
+    await new Promise(r => setTimeout(r, isNavAction ? 1500 : 400));
 
     // Check if page is loading after action
     const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
@@ -957,49 +955,66 @@ async function runAgentLoop(tabId, goal, onStep, opts = {}) {
       prevSnapshotSig = '';
     }
 
-    // Re-plan when URL changed significantly (new page = old plan is stale)
+    // Re-plan when URL path changed (new page = old plan is stale)
     if (tab?.url && lastPlanUrl && tab.url !== lastPlanUrl) {
-      const sameOrigin = new URL(tab.url).origin === new URL(lastPlanUrl).origin;
-      // Only re-plan on cross-origin navigations or clear path changes (not hash/query tweaks)
-      const pathChanged = new URL(tab.url).pathname !== new URL(lastPlanUrl).pathname;
-      if (!sameOrigin || pathChanged) {
-        try {
+      try {
+        const pathChanged = new URL(tab.url).pathname !== new URL(lastPlanUrl).pathname;
+        if (pathChanged) {
           const reSnap = await getEnrichedSnapshot(tabId, { fresh: true }).catch(() => null);
           const reScreen = await takeScreenshot().catch(() => null);
           if (reSnap) await refreshPlan(reSnap, reScreen);
-        } catch { /* non-fatal */ }
-      }
+        }
+      } catch { /* non-fatal */ }
     }
 
     // ── VALIDATOR AGENT (Nanobrowser-style) ────────────────────────────────
-    // Runs AFTER smart-wait + page-load so nav actions settle before we check.
-    // Only validates meaningful interactive actions, not navigation/scroll/wait.
+    // Runs AFTER smart-wait + page-load so SPA transitions have time to settle.
     const VALIDATE_ACTIONS = ['click','click_xy','fill','fill_otp','select','press','press_on'];
+    let validationFailed = false;
     if (result?.success && VALIDATE_ACTIONS.includes(action.action)) {
       try {
+        // Extra settle for SPA pages: wait another 800ms before checking
+        await new Promise(r => setTimeout(r, 800));
         const afterSnap = await getEnrichedSnapshot(tabId, { fresh: true }).catch(() => null);
         if (afterSnap) {
           const afterScreen = await takeScreenshot().catch(() => null);
           const validation = await validateAction(desc, prevSnapshotSig, afterSnap.text, afterScreen);
           if (validation && !validation.success) {
             validatorFailStreak++;
-            onStep({ type: 'step', text: `Step ${step}: validator: action may not have worked — ${validation.reason} (${validatorFailStreak}/${MAX_VALIDATOR_FAILS})` });
+            validationFailed = true;
+            onStep({ type: 'step', text: `Step ${step}: validator: may not have worked — ${validation.reason} (${validatorFailStreak}/${MAX_VALIDATOR_FAILS})` });
             if (validatorFailStreak >= MAX_VALIDATOR_FAILS) {
               const msg = `"${desc}" failed validation ${MAX_VALIDATOR_FAILS} times: ${validation.reason}`;
               speak('I seem stuck. Please check the page.');
               return { success: false, message: msg };
             }
-            // Force fresh read next iteration so self-healing picks up the real state
             prevSnapshotSig = '';
             sameSnapshotCount = 0;
           } else {
             validatorFailStreak = 0;
-            // Mark page as changed so stuck-detection doesn't fire next iteration
             sameSnapshotCount = 0;
-            prevSnapshotSig = ''; // let next iteration re-baseline naturally
+            prevSnapshotSig = '';
           }
         }
       } catch { /* validator failure non-fatal */ }
+    }
+
+    // Write to history AFTER validator so GPT knows whether the action actually worked
+    const histStatus = validationFailed
+      ? `VALIDATION FAILED — retry this action differently`
+      : (result?.success ? 'ok' : result?.message || '?');
+    history.push(`${desc}: ${histStatus}||${actionKey}`);
+    if (_abortLoop) return { success: false, message: 'Stopped by user.' };
+
+    // ── Wait-loop guard ──────────────────────────────────────────────────────
+    // If GPT keeps issuing "wait" it means it's stuck. Force a retry of last action.
+    const recentActions = history.slice(-4).map(h => h.split('||')[1]?.split(':')[0]);
+    if (recentActions.filter(a => a === 'wait').length >= 3) {
+      onStep({ type: 'step', text: `Step ${step}: wait loop detected — retrying last action…` });
+      prevSnapshotSig = '';
+      sameSnapshotCount = 0;
+      // Remove the wait entries so GPT doesn't see them as valid history
+      while (history.length && history[history.length - 1].includes('||wait:')) history.pop();
     }
   }
 
