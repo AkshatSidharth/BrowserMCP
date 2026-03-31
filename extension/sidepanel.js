@@ -348,9 +348,9 @@ KAPTURE TOOL CREATION — standalone commands (outside full agent creation flow)
        a) Fill "Function Name" input with an appropriate name.
        b) Fill "Description" textarea with what the function does.
        c) For the Function Code editor (CodeMirror — NOT a regular textarea):
-          Use evaluate to set code directly:
-          {"action":"evaluate","script":"const code=`PASTE_CODE_HERE`; const cm=document.querySelector('.CodeMirror')?.CodeMirror; if(cm){cm.setValue(code);return 'ok-cm';} const ce=document.querySelector('.cm-content,[contenteditable=\"true\"]'); if(ce){ce.focus();document.execCommand('selectAll',false,null);document.execCommand('insertText',false,code);return 'ok-ce';} return 'not found';"}
-          Replace PASTE_CODE_HERE with the actual code (backtick-safe).
+          Use evaluate to set code directly — example (replace YOUR_CODE_HERE with actual code using single quotes):
+          {"action":"evaluate","script":"const code='YOUR_CODE_HERE'; const cm=document.querySelector('.CodeMirror')?.CodeMirror; if(cm){cm.setValue(code);return 'ok-cm';} const ce=document.querySelector('.cm-content,[contenteditable=true]'); if(ce){ce.focus();document.execCommand('selectAll',false,null);document.execCommand('insertText',false,code);return 'ok-ce';} return 'not found';","description":"Write code into editor"}
+          For multi-line code use \\n to represent newlines in the string.
        d) Click "Add Function" button.
     ⚠️ NEVER click "Generate Prompt" on the Model tab for this — that is for agent prompts only.
 27. "create a post call tool" / "post action" → Tools tab (if not active) → Post Actions sub-tab (if not active) → Create New → same Custom Integration flow as above.
@@ -360,8 +360,8 @@ KAPTURE TOOL CREATION — standalone commands (outside full agent creation flow)
 CODE EDITORS (CodeMirror / Monaco / Ace — any page):
 30. Code editors render in a canvas/div and are NOT regular textareas — fill and click_xy do NOT work.
     Identify them by: dark background with syntax-highlighted code, line numbers on the left.
-    To write code into them, ALWAYS use evaluate:
-    {"action":"evaluate","script":"const code=`YOUR_CODE`; const cm=document.querySelector('.CodeMirror')?.CodeMirror; if(cm){cm.setValue(code);return 'ok';} const ce=document.querySelector('.cm-content,[contenteditable=\"true\"]'); if(ce){ce.focus();document.execCommand('selectAll',false,null);document.execCommand('insertText',false,code);return 'ok';} return 'editor not found';","description":"Write code into editor"}
+    To write code into them, ALWAYS use evaluate with this pattern (use single quotes, \\n for newlines):
+    {"action":"evaluate","script":"const code='LINE1\\nLINE2\\nLINE3'; const cm=document.querySelector('.CodeMirror')?.CodeMirror; if(cm){cm.setValue(code);return 'ok';} const ce=document.querySelector('.cm-content,[contenteditable=true]'); if(ce){ce.focus();document.execCommand('selectAll',false,null);document.execCommand('insertText',false,code);return 'ok';} return 'editor not found';","description":"Write code into editor"}
     Never attempt to fill or click individual lines — always replace the full content via evaluate.
 
 STUCK DETECTION:
