@@ -914,6 +914,37 @@ async function runAgentLoop(tabId, goal, onStep, opts = {}) {
           }
         }
 
+        // ── Text-search evaluate fallback (last resort for any click failure) ──
+        // Finds button/link by visible text — works even when ref/index/coords are wrong.
+        if (!result.success) {
+          const targetName = (action.description || action.ref || '').replace(/^(click|tap|press)\s+/i, '').slice(0, 40);
+          if (targetName) {
+            const evalRes = await sendAction(tabId, {
+              action: 'evaluate',
+              script: `
+                const needle = ${JSON.stringify(targetName.toLowerCase())};
+                const els = [...document.querySelectorAll('button,[role=button],a')];
+                const match = els.find(e => {
+                  const t = e.textContent.trim().toLowerCase();
+                  return t === needle || t.includes(needle) || needle.includes(t.slice(0,15));
+                });
+                if (match) {
+                  match.scrollIntoView({block:'nearest'});
+                  match.focus();
+                  match.click();
+                  ['pointerdown','mousedown','pointerup','mouseup','click'].forEach(ev =>
+                    match.dispatchEvent(new MouseEvent(ev, {bubbles:true,cancelable:true})));
+                  return 'clicked:' + match.textContent.trim().slice(0,30);
+                }
+                return 'not found';
+              `
+            }).catch(() => null);
+            if (evalRes?.message?.startsWith('clicked')) {
+              result = { success: true, message: evalRes.message };
+            }
+          }
+        }
+
       } else if (action.action === 'click_xy') {
         try {
           await cdpClick(tabId, action.x, action.y);

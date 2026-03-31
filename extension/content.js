@@ -364,7 +364,12 @@ async function executeAction(msg) {
         await new Promise(r => setTimeout(r, 30));
         nativeFill(el, String(value));
         el.dispatchEvent(new InputEvent('input', { bubbles: true, data: String(value) }));
-        return { success: true, message: `Filled "${_els[index]?.name}" with "${value}"` };
+        // Blur/focusout to trigger React's onBlur form-validation handlers
+        // (some SPAs only enable submit buttons after blur, not just onChange)
+        el.dispatchEvent(new FocusEvent('blur',     { bubbles: true }));
+        el.dispatchEvent(new FocusEvent('focusout', { bubbles: true }));
+        await new Promise(r => setTimeout(r, 80));
+        return { success: true, message: `Filled "${_els[index]?.name ?? ref}" with "${String(value).slice(0,60)}"` };
       }
 
       case 'fill_otp': {
