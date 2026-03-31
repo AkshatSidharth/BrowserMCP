@@ -914,27 +914,46 @@ async function runAgentLoop(tabId, goal, onStep, opts = {}) {
           }
         }
 
-        // ── Text-search evaluate fallback (last resort for any click failure) ──
-        // Finds button/link by visible text — works even when ref/index/coords are wrong.
-        if (!result.success) {
-          const targetName = (action.description || action.ref || '').replace(/^(click|tap|press)\s+/i, '').slice(0, 40);
-          if (targetName) {
+        // ── Text-search evaluate (runs on every click as belt-and-suspenders) ──
+        // Finds element by visible text — most reliable for React SPAs.
+        // Runs regardless of result.success to supplement CDP/JS clicks.
+        {
+          const targetName = (action.description || action.ref || '')
+            .replace(/^(click|tap|press|the|'|")+\s*/gi, '')
+            .replace(/['"\u2018\u2019\u201c\u201d]/g, '')
+            .trim().slice(0, 50);
+          if (targetName.length > 2) {
             const evalRes = await sendAction(tabId, {
               action: 'evaluate',
               script: `
                 const needle = ${JSON.stringify(targetName.toLowerCase())};
-                const els = [...document.querySelectorAll('button,[role=button],a')];
-                const match = els.find(e => {
-                  const t = e.textContent.trim().toLowerCase();
-                  return t === needle || t.includes(needle) || needle.includes(t.slice(0,15));
-                });
-                if (match) {
-                  match.scrollIntoView({block:'nearest'});
-                  match.focus();
-                  match.click();
+                const candidates = [...document.querySelectorAll(
+                  'button,[role=button],a[href],[role=tab],[role=menuitem],[role=option],[role=treeitem]'
+                )];
+                // Score by text similarity
+                let best = null, bestScore = 0;
+                for (const el of candidates) {
+                  const t = el.textContent.trim().toLowerCase();
+                  if (!t) continue;
+                  let score = 0;
+                  if (t === needle) score = 100;
+                  else if (t.startsWith(needle) || needle.startsWith(t)) score = 80;
+                  else if (t.includes(needle) || needle.includes(t)) score = 60;
+                  else {
+                    const nw = needle.split(/\s+/), tw = t.split(/\s+/);
+                    const common = nw.filter(w => w.length > 2 && tw.some(tw => tw.includes(w)));
+                    if (common.length) score = 40 * common.length / nw.length;
+                  }
+                  if (score > bestScore) { best = el; bestScore = score; }
+                }
+                if (best && bestScore >= 60) {
+                  best.scrollIntoView({block:'nearest'});
+                  best.focus();
+                  best.click();
                   ['pointerdown','mousedown','pointerup','mouseup','click'].forEach(ev =>
-                    match.dispatchEvent(new MouseEvent(ev, {bubbles:true,cancelable:true})));
-                  return 'clicked:' + match.textContent.trim().slice(0,30);
+                    best.dispatchEvent(new (ev.startsWith('pointer')?PointerEvent:MouseEvent)(ev,
+                      {bubbles:true,cancelable:true,pointerId:1})));
+                  return 'clicked:' + best.textContent.trim().slice(0,30);
                 }
                 return 'not found';
               `
@@ -991,6 +1010,35 @@ async function runAgentLoop(tabId, goal, onStep, opts = {}) {
     }
 
     invalidateSnapCache(tabId);
+
+    // ── New-tab follow ───────────────────────────────────────────────────────
+    // If a click opened a new tab (common for "Create New" or external links),
+    // switch focus to that tab so the rest of the loop works in the right context.
+    if (result?.success && ['click','click_xy'].includes(action.action)) {
+      await new Promise(r => setTimeout(r, 600));
+      try {
+        const allTabs = await chrome.tabs.query({ currentWindow: true });
+        const newTab = allTabs.find(t => t.id !== tabId && t.status !== 'unloaded');
+        if (newTab) {
+          await chrome.tabs.update(newTab.id, { active: true });
+          if (newTab.status === 'loading') {
+            onStep({ type: 'step', text: `Step ${step}: new tab opened — waiting for page…` });
+            await waitForTabLoad(newTab.id);
+          }
+          tabId = newTab.id;
+          prevSnapshotSig = '';
+          sameSnapshotCount = 0;
+          invalidateSnapCache(tabId);
+          onStep({ type: 'step', text: `Step ${step}: switched to new tab` });
+          // Re-plan for the new page context
+          try {
+            const ntSnap = await getEnrichedSnapshot(tabId, { fresh: true }).catch(() => null);
+            const ntScreen = await takeScreenshot().catch(() => null);
+            if (ntSnap) await refreshPlan(ntSnap, ntScreen);
+          } catch {}
+        }
+      } catch { /* non-fatal */ }
+    }
 
     // Auto-done after any Save/Submit/Update click — don't loop after saving
     if (result?.success && action.action === 'click') {
