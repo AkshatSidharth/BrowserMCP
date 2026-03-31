@@ -1283,15 +1283,19 @@ const settingsBtn = document.getElementById('settingsBtn');
 const emptyState  = document.getElementById('emptyState');
 
 function setStatus(state, text) {
-  statusDot.className = `status-dot ${state}`;
+  statusDot.className = `sdot ${state}`;
+  statusText.className = `stext ${state === 'ready' ? '' : state}`;
   statusText.textContent = text;
-  // Drive orb colour via body class
   document.body.classList.remove('listening', 'running');
   if (state === 'running') document.body.classList.add('running');
 }
 
+// SVG checkmark for step icons
+const CHECK_SVG = `<svg viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="2,6 5,9 10,3"/></svg>`;
+const DASH_SVG  = `<svg viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="3" y1="6" x2="9" y2="6"/></svg>`;
+const X_SVG     = `<svg viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="3" y1="3" x2="9" y2="9"/><line x1="9" y1="3" x2="3" y2="9"/></svg>`;
+
 function addStep(text, type = 'active') {
-  // Hide the idle orb once we have real steps
   const es = document.getElementById('emptyState');
   if (es) es.style.display = 'none';
 
@@ -1299,10 +1303,13 @@ function addStep(text, type = 'active') {
   if (prev) prev.classList.replace('active', 'done');
 
   const el = document.createElement('div');
-  el.className = `step-item ${type}`;
-  const icons = { success: '✓', error: '✗', active: '›', done: '·' };
-  const icon = icons[type] || '›';
-  el.innerHTML = `<div class="step-dot">${icon}</div><div class="step-text">${text}</div>`;
+  // Highlight plan lines and meaningful action lines as cards
+  const isCard = type === 'success' || type === 'error' ||
+    /^(Plan|Step \d+: (?!reading|thinking|waiting|page unchanged))/.test(text);
+  el.className = `step-item ${type}${isCard ? ' card' : ''}`;
+
+  const iconSvg = type === 'error' ? X_SVG : type === 'active' ? DASH_SVG : CHECK_SVG;
+  el.innerHTML = `<div class="step-check">${iconSvg}</div><div class="step-text">${text}</div>`;
   stepsArea.appendChild(el);
   stepsArea.scrollTop = stepsArea.scrollHeight;
   return el;
@@ -1349,12 +1356,12 @@ async function submitCommand(text) {
   _interruptCmd = null;
   clearSteps();
   transcriptEl.textContent = text;
-  transcriptEl.className = 'transcript-text has-text';
+  transcriptEl.className = 'heard-text';
   setStatus('running', 'Running…');
   // Keep mic ENABLED so user can interrupt mid-loop
   sendBtn.textContent = '■';
   sendBtn.title = 'Stop';
-  sendBtn.className = 'action-btn stop-btn';
+  sendBtn.className = 'stop-btn';
   textInput.disabled = true;
 
   try {
@@ -1379,7 +1386,7 @@ async function submitCommand(text) {
     _interruptCmd = null;
     sendBtn.textContent = '↵';
     sendBtn.title = '';
-    sendBtn.className = 'action-btn send-btn';
+    sendBtn.className = 'send-btn';
     textInput.disabled = false;
   }
 }
@@ -1421,7 +1428,7 @@ async function startRecording() {
   micLabel.textContent = 'Release to send';
   setStatus('running', 'Listening…');
   transcriptEl.textContent = '…';
-  transcriptEl.className   = 'transcript-text interim';
+  transcriptEl.className   = 'heard-text interim';
 }
 
 async function stopRecording() {
@@ -1434,7 +1441,7 @@ async function stopRecording() {
 chrome.runtime.onMessage.addListener((msg) => {
   if (msg.type === 'SPEECH_INTERIM') {
     transcriptEl.textContent = msg.text || '…';
-    transcriptEl.className   = 'transcript-text interim';
+    transcriptEl.className   = 'heard-text interim';
     if (msg.text) _finalText = msg.text;
   } else if (msg.type === 'SPEECH_ERROR') {
     isRecording = false;
@@ -1453,12 +1460,12 @@ chrome.runtime.onMessage.addListener((msg) => {
     resetMicBtn();
     const text = (_finalText || transcriptEl.textContent).trim();
     if (text && text !== '…' && text !== '—') {
-      transcriptEl.className = 'transcript-text';
+      transcriptEl.className = 'heard-text empty';
       submitCommand(text);
     } else {
       setStatus('ready', 'Ready');
       transcriptEl.textContent = '—';
-      transcriptEl.className   = 'transcript-text';
+      transcriptEl.className   = 'heard-text empty';
     }
     _finalText = '';
   }
@@ -1512,7 +1519,7 @@ refreshBtn.addEventListener('click', async () => {
       _isRunning = false;
       textInput.disabled = false;
       sendBtn.textContent = '↵';
-      sendBtn.className = 'action-btn send-btn';
+      sendBtn.className = 'send-btn';
       document.body.classList.remove('running', 'listening');
     }
     clearSteps();
