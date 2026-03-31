@@ -77,9 +77,10 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     case 'CDP_CLICK': {
       const { tabId, x, y } = msg;
       withDebugger(tabId, async () => {
-        await dbgSend(tabId, 'Input.dispatchMouseEvent', { type: 'mouseMoved',    x, y, button: 'none',  clickCount: 0 });
-        await dbgSend(tabId, 'Input.dispatchMouseEvent', { type: 'mousePressed',  x, y, button: 'left',  clickCount: 1 });
-        await dbgSend(tabId, 'Input.dispatchMouseEvent', { type: 'mouseReleased', x, y, button: 'left',  clickCount: 1 });
+        await dbgSend(tabId, 'Input.dispatchMouseEvent', { type: 'mouseMoved',    x, y, button: 'none',  clickCount: 0, pointerType: 'mouse' });
+        await dbgSend(tabId, 'Input.dispatchMouseEvent', { type: 'mousePressed',  x, y, button: 'left',  clickCount: 1, pointerType: 'mouse' });
+        await new Promise(r => setTimeout(r, 50));
+        await dbgSend(tabId, 'Input.dispatchMouseEvent', { type: 'mouseReleased', x, y, button: 'left',  clickCount: 1, pointerType: 'mouse' });
       })
         .then(() => sendResponse({ ok: true }))
         .catch(err => sendResponse({ ok: false, error: err.message }));
@@ -115,10 +116,11 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
 
         await dbgSend(tabId, 'Runtime.releaseObject', { objectId: oid });
 
-        // Fire real mouse events at live coords
-        await dbgSend(tabId, 'Input.dispatchMouseEvent', { type: 'mouseMoved',    x, y, button: 'none', clickCount: 0 });
-        await dbgSend(tabId, 'Input.dispatchMouseEvent', { type: 'mousePressed',  x, y, button: 'left', clickCount: 1 });
-        await dbgSend(tabId, 'Input.dispatchMouseEvent', { type: 'mouseReleased', x, y, button: 'left', clickCount: 1 });
+        // Fire full pointer + mouse event sequence for React synthetic events
+        await dbgSend(tabId, 'Input.dispatchMouseEvent', { type: 'mouseMoved',    x, y, button: 'none', clickCount: 0, pointerType: 'mouse' });
+        await dbgSend(tabId, 'Input.dispatchMouseEvent', { type: 'mousePressed',  x, y, button: 'left', clickCount: 1, pointerType: 'mouse' });
+        await new Promise(r => setTimeout(r, 50));
+        await dbgSend(tabId, 'Input.dispatchMouseEvent', { type: 'mouseReleased', x, y, button: 'left', clickCount: 1, pointerType: 'mouse' });
       })
         .then(() => sendResponse({ ok: true }))
         .catch(err => sendResponse({ ok: false, error: err.message }));

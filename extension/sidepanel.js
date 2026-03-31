@@ -854,37 +854,37 @@ async function runAgentLoop(tabId, goal, onStep, opts = {}) {
       continue;
     }
 
-    // Execute action — priority: cdpClickByNode (HyperAgent) > cdpClick (coords) > JS click
+    // Execute action
     let result = { success: false, message: 'no response' };
     try {
       if (action.action === 'click') {
-        // 1. Try a11y-tree nodeId click (most reliable — live coords at click time)
         const nodeLine = snapshot.text.split('\n').find(l => {
           if (action.ref && l.includes(`#${action.ref}`)) return true;
           if (action.index != null && l.trimStart().startsWith(`[${action.index}]`)) return true;
           return false;
         });
+
+        // Always run JS content-script click first (dispatches full React event sequence:
+        // pointerdown → mousedown → pointerup → mouseup → click). CDP alone is not enough
+        // for React SPA cards/divs that use synthetic event delegation.
+        result = await sendAction(tabId, action);
+
+        // Also fire CDP for browser-native events (handles non-React elements, iframes, etc.)
         const nodeIdM = nodeLine?.match(/nodeId:(\d+)/);
+        const cm = nodeLine?.match(/@\((\d+),(\d+)\)/);
         if (nodeIdM) {
+          try { await cdpClickByNode(tabId, +nodeIdM[1]); } catch {}
+        } else if (cm) {
+          try { await cdpClick(tabId, +cm[1], +cm[2]); } catch {}
+        }
+
+        // If JS said element not found, fall back to CDP coordinate click
+        if (!result.success && cm) {
           try {
-            await cdpClickByNode(tabId, +nodeIdM[1]);
-            result = { success: true, message: `Node click nodeId:${nodeIdM[1]}` };
-          } catch { /* fall through to coord click */ }
+            await cdpClick(tabId, +cm[1], +cm[2]);
+            result = { success: true, message: `CDP coord click (${cm[1]},${cm[2]})` };
+          } catch {}
         }
-
-        // 2. Coordinate-based CDP click
-        if (!result.success) {
-          const cm = nodeLine?.match(/@\((\d+),(\d+)\)/);
-          if (cm) {
-            try {
-              await cdpClick(tabId, +cm[1], +cm[2]);
-              result = { success: true, message: `CDP click (${cm[1]},${cm[2]})` };
-            } catch { /* fall through to JS click */ }
-          }
-        }
-
-        // 3. JS content-script click (fallback)
-        if (!result.success) result = await sendAction(tabId, action);
 
       } else if (action.action === 'click_xy') {
         try {
@@ -919,13 +919,13 @@ async function runAgentLoop(tabId, goal, onStep, opts = {}) {
           );
           const hnm = healLine?.match(/nodeId:(\d+)/);
           const hcm = healLine?.match(/@\((\d+),(\d+)\)/);
-          if (hnm) {
-            try { await cdpClickByNode(tabId, +hnm[1]); result = { success: true, message: `Healed via nodeId:${hnm[1]}` }; } catch {}
-          }
+          // JS click first (React synthetic events), then CDP for browser-native
+          result = await sendAction(tabId, healAction).catch(() => result);
+          if (hnm) { try { await cdpClickByNode(tabId, +hnm[1]); } catch {} }
+          else if (hcm) { try { await cdpClick(tabId, +hcm[1], +hcm[2]); } catch {} }
           if (!result.success && hcm) {
             try { await cdpClick(tabId, +hcm[1], +hcm[2]); result = { success: true, message: `Healed via coords` }; } catch {}
           }
-          if (!result.success) result = await sendAction(tabId, healAction).catch(() => result);
           if (result.success) onStep({ type: 'step', text: `Step ${step}: ✓ self-healed` });
         }
       } catch { /* healing failed — continue normally */ }
