@@ -344,16 +344,30 @@ KAPTURE TOOL CREATION — standalone commands (outside full agent creation flow)
     → If not on Tools tab: click "Tools" tab. If already on Tools tab: skip directly to next step.
     → Click "Pre Actions" sub-tab (if not already active). If already active: skip to next step.
     → Click "Create New" dashed pink button.
-    → Fill the tool name and function body as specified in the goal.
+    → You are now on the Custom Integration page. Fill fields in order:
+       a) Fill "Function Name" input with an appropriate name.
+       b) Fill "Description" textarea with what the function does.
+       c) For the Function Code editor (CodeMirror — NOT a regular textarea):
+          Use evaluate to set code directly:
+          {"action":"evaluate","script":"const code=`PASTE_CODE_HERE`; const cm=document.querySelector('.CodeMirror')?.CodeMirror; if(cm){cm.setValue(code);return 'ok-cm';} const ce=document.querySelector('.cm-content,[contenteditable=\"true\"]'); if(ce){ce.focus();document.execCommand('selectAll',false,null);document.execCommand('insertText',false,code);return 'ok-ce';} return 'not found';"}
+          Replace PASTE_CODE_HERE with the actual code (backtick-safe).
+       d) Click "Add Function" button.
     ⚠️ NEVER click "Generate Prompt" on the Model tab for this — that is for agent prompts only.
-27. "create a post call tool" / "post action" → Tools tab (if not active) → Post Actions sub-tab (if not active) → Create New.
-28. "create an in-prompt function" / "in-prompt tool" → Tools tab (if not active) → In-Prompt Functions sub-tab (if not active) → Create New.
+27. "create a post call tool" / "post action" → Tools tab (if not active) → Post Actions sub-tab (if not active) → Create New → same Custom Integration flow as above.
+28. "create an in-prompt function" / "in-prompt tool" → Tools tab (if not active) → In-Prompt Functions sub-tab (if not active) → Create New → same Custom Integration flow as above.
 29. "add knowledge base" / "upload document" → Tools tab (if not active) → Knowledge Base sub-tab (if not active) → upload button.
 
+CODE EDITORS (CodeMirror / Monaco / Ace — any page):
+30. Code editors render in a canvas/div and are NOT regular textareas — fill and click_xy do NOT work.
+    Identify them by: dark background with syntax-highlighted code, line numbers on the left.
+    To write code into them, ALWAYS use evaluate:
+    {"action":"evaluate","script":"const code=`YOUR_CODE`; const cm=document.querySelector('.CodeMirror')?.CodeMirror; if(cm){cm.setValue(code);return 'ok';} const ce=document.querySelector('.cm-content,[contenteditable=\"true\"]'); if(ce){ce.focus();document.execCommand('selectAll',false,null);document.execCommand('insertText',false,code);return 'ok';} return 'editor not found';","description":"Write code into editor"}
+    Never attempt to fill or click individual lines — always replace the full content via evaluate.
+
 STUCK DETECTION:
-30. If snapshot looks identical to previous step, try scrolling or a different element.
-31. If an element click fails (not found), use click_xy at the element's @(cx,cy) as fallback.
-32. After 3 failed attempts on same step, return failed with a clear reason.
+32. If snapshot looks identical to previous step, try scrolling or a different element.
+33. If an element click fails (not found), use click_xy at the element's @(cx,cy) as fallback.
+34. After 3 failed attempts on same step, return failed with a clear reason.
 `.trim();
 
 // Parse valid indices from snapshot text e.g. "[3] enabled button..." → Set{3}
