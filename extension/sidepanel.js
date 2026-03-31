@@ -331,13 +331,73 @@ function parseSnapshotIndices(pageText) {
   return indices;
 }
 
-async function getNextStep(goal, pageText, screenshotUrl, history) {
+// ── PLANNER AGENT (Nanobrowser-style) ────────────────────────────────────────
+// Runs ONCE at loop start. Sees the page + goal → returns ordered steps.
+// Navigator follows the plan every step — prevents going off-track.
+const PLANNER_PROMPT = `You are a browser automation planner. You see the current page and a goal.
+Generate a concise ordered execution plan — 3 to 8 steps maximum.
+Be specific about what to click/fill on THIS page. Do not invent elements not on the page.
+
+Return JSON: {"steps": ["Step 1: ...", "Step 2: ...", ...], "notes": "any caveats"}
+Only return valid JSON, no markdown.`;
+
+async function planTask(goal, pageText, screenshotUrl) {
+  const userContent = [
+    screenshotUrl ? { type: 'image_url', image_url: { url: screenshotUrl, detail: 'low' } } : null,
+    { type: 'text', text: `GOAL: ${goal}\n\nCurrent page:\n${pageText.slice(0, 3000)}\n\nGenerate execution plan.` },
+  ].filter(Boolean);
+
+  try {
+    const raw = await callOpenAI(
+      [{ role: 'system', content: PLANNER_PROMPT }, { role: 'user', content: userContent }],
+      { maxTokens: 400, json: true }
+    );
+    const parsed = JSON.parse(raw);
+    return parsed.steps?.length ? parsed : null;
+  } catch {
+    return null; // planner failure is non-fatal — navigator continues without plan
+  }
+}
+
+// ── VALIDATOR AGENT (Nanobrowser-style) ──────────────────────────────────────
+// Runs after each meaningful action. Quick cheap call: did the action work?
+// Returns {success: bool, reason: string}
+const VALIDATOR_PROMPT = `You are a browser action validator. You see two snapshots: BEFORE and AFTER an action.
+Determine if the action succeeded by checking if the page changed in the expected way.
+
+Return JSON: {"success": true/false, "reason": "one sentence"}
+Only return valid JSON, no markdown.`;
+
+async function validateAction(desc, beforeSig, afterText, screenshotUrl) {
+  try {
+    const userContent = [
+      screenshotUrl ? { type: 'image_url', image_url: { url: screenshotUrl, detail: 'low' } } : null,
+      { type: 'text', text: `Action performed: "${desc}"\n\nBEFORE (first 400 chars):\n${beforeSig}\n\nAFTER (first 400 chars):\n${afterText.slice(0, 400)}\n\nDid the action succeed?` },
+    ].filter(Boolean);
+
+    const raw = await callOpenAI(
+      [{ role: 'system', content: VALIDATOR_PROMPT }, { role: 'user', content: userContent }],
+      { maxTokens: 120, json: true }
+    );
+    return JSON.parse(raw);
+  } catch {
+    return { success: true, reason: 'validator unavailable' }; // non-fatal
+  }
+}
+
+// ── NAVIGATOR (unchanged interface, now receives plan context) ────────────────
+async function getNextStep(goal, pageText, screenshotUrl, history, plan) {
   // Keep only last 8 steps to prevent context drift / hallucination from long history
   const recentHistory = history.slice(-8);
   const hist = recentHistory.length
     ? '\nSteps done (recent):\n' + recentHistory.map((h, i) => `${i + 1}. ${h}`).join('\n')
     : '\nNo steps yet.';
-  const goalText = `GOAL: ${goal}${hist}\n\nCurrent page (ONLY use indices from this list):\n${pageText}\n\nNext single action?`;
+
+  const planCtx = plan?.steps?.length
+    ? `\nEXECUTION PLAN (follow this order):\n${plan.steps.map((s, i) => `${i + 1}. ${s}`).join('\n')}\n`
+    : '';
+
+  const goalText = `GOAL: ${goal}${planCtx}${hist}\n\nCurrent page (ONLY use indices/refs from this list):\n${pageText}\n\nNext single action?`;
 
   const userContent = screenshotUrl
     ? [
@@ -558,6 +618,23 @@ async function runAgentLoop(tabId, goal, onStep, opts = {}) {
   let prevSnapshotSig = '';
   let sameSnapshotCount = 0;
   let promptInjected = false;
+  let plan = null;
+  let validatorFailStreak = 0;
+  const MAX_VALIDATOR_FAILS = 3;
+
+  // ── PLANNER: generate step-by-step plan before loop starts ───────────────
+  try {
+    onStep({ type: 'step', text: `Planning: breaking down the goal…` });
+    await new Promise(r => setTimeout(r, 300));
+    const initSnap = await getEnrichedSnapshot(tabId).catch(() => null);
+    const initScreen = await takeScreenshot().catch(() => null);
+    if (initSnap) {
+      plan = await planTask(goal, initSnap.text, initScreen);
+      if (plan?.steps?.length) {
+        onStep({ type: 'step', text: `Plan ready (${plan.steps.length} steps): ${plan.steps[0]}` });
+      }
+    }
+  } catch { /* planner failure non-fatal */ }
 
   for (let step = 1; step <= MAX; step++) {
     if (_abortLoop) return { success: false, message: 'Stopped by user.' };
@@ -613,7 +690,7 @@ async function runAgentLoop(tabId, goal, onStep, opts = {}) {
     onStep({ type: 'step', text: `Step ${step}: thinking…` });
     let action;
     try {
-      action = await getNextStep(goal, snapshot.text, screenshot, history);
+      action = await getNextStep(goal, snapshot.text, screenshot, history, plan);
     } catch (err) {
       return { success: false, message: `GPT error: ${err.message}` };
     }
@@ -801,6 +878,37 @@ async function runAgentLoop(tabId, goal, onStep, opts = {}) {
     }
 
     invalidateSnapCache(tabId);
+
+    // ── VALIDATOR AGENT (Nanobrowser-style) ────────────────────────────────
+    // After each click/fill: verify the page changed as expected.
+    const VALIDATE_ACTIONS = ['click','click_xy','fill','fill_otp','select','press','press_on'];
+    if (result?.success && VALIDATE_ACTIONS.includes(action.action)) {
+      try {
+        // Short settle before reading after-state
+        await new Promise(r => setTimeout(r, 700));
+        const afterSnap = await getEnrichedSnapshot(tabId, { fresh: true }).catch(() => null);
+        if (afterSnap) {
+          const afterScreen = await takeScreenshot().catch(() => null);
+          const validation = await validateAction(desc, prevSnapshotSig, afterSnap.text, afterScreen);
+          if (validation && !validation.success) {
+            validatorFailStreak++;
+            onStep({ type: 'step', text: `Step ${step}: validator says action may not have worked — ${validation.reason} (${validatorFailStreak}/${MAX_VALIDATOR_FAILS})` });
+            if (validatorFailStreak >= MAX_VALIDATOR_FAILS) {
+              const msg = `Action "${desc}" failed validation ${MAX_VALIDATOR_FAILS} times: ${validation.reason}`;
+              speak('I seem stuck. Please check the page.');
+              return { success: false, message: msg };
+            }
+            // Force fresh snapshot next iteration for self-healing
+            prevSnapshotSig = '';
+          } else {
+            validatorFailStreak = 0;
+            // Update prevSnapshotSig to after-state so stuck-detection works correctly
+            prevSnapshotSig = afterSnap.text.slice(0, 300);
+          }
+        }
+      } catch { /* validator failure non-fatal */ }
+    }
+
     history.push(`${desc}: ${result?.success ? 'ok' : result?.message || '?'}||${actionKey}`);
     if (_abortLoop) return { success: false, message: 'Stopped by user.' };
 
