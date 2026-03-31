@@ -864,25 +864,31 @@ async function runAgentLoop(tabId, goal, onStep, opts = {}) {
           return false;
         });
 
+        // Extract coords from snapshot so content script has a coord fallback
+        // even when element not found by ref/index (e.g. after React re-render)
+        const coordM = nodeLine?.match(/@\((\d+),(\d+)\)/);
+        const enrichedAction = coordM
+          ? { ...action, cx: +coordM[1], cy: +coordM[2] }
+          : action;
+
         // Always run JS content-script click first (dispatches full React event sequence:
         // pointerdown → mousedown → pointerup → mouseup → click). CDP alone is not enough
         // for React SPA cards/divs that use synthetic event delegation.
-        result = await sendAction(tabId, action);
+        result = await sendAction(tabId, enrichedAction);
 
         // Also fire CDP for browser-native events (handles non-React elements, iframes, etc.)
         const nodeIdM = nodeLine?.match(/nodeId:(\d+)/);
-        const cm = nodeLine?.match(/@\((\d+),(\d+)\)/);
         if (nodeIdM) {
           try { await cdpClickByNode(tabId, +nodeIdM[1]); } catch {}
-        } else if (cm) {
-          try { await cdpClick(tabId, +cm[1], +cm[2]); } catch {}
+        } else if (coordM) {
+          try { await cdpClick(tabId, +coordM[1], +coordM[2]); } catch {}
         }
 
-        // If JS said element not found, fall back to CDP coordinate click
-        if (!result.success && cm) {
+        // If JS said element not found, CDP coord click is the last resort
+        if (!result.success && coordM) {
           try {
-            await cdpClick(tabId, +cm[1], +cm[2]);
-            result = { success: true, message: `CDP coord click (${cm[1]},${cm[2]})` };
+            await cdpClick(tabId, +coordM[1], +coordM[2]);
+            result = { success: true, message: `CDP coord click (${coordM[1]},${coordM[2]})` };
           } catch {}
         }
 

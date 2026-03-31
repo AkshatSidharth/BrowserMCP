@@ -302,17 +302,24 @@ async function executeAction(msg) {
         let el = getEl(index, ref);
         if (!el) {
           // Element stale — try coordinate fallback using stored cx/cy
-          const stored = _els[index];
-          if (stored) {
-            const live = document.elementFromPoint(stored.cx, stored.cy);
+          // Look up by index OR by ref (when GPT sends ref-only without index)
+          const stored = _els[index] ?? (ref ? _els.find(e => e.ref === ref) : null);
+          const fx = msg.cx ?? stored?.cx;
+          const fy = msg.cy ?? stored?.cy;
+          if (fx != null && fy != null) {
+            const live = document.elementFromPoint(fx, fy);
             if (live) {
               live.focus();
-              live.click(); // native click — works with React/Vue/Angular
-              live.dispatchEvent(new MouseEvent('click', { bubbles:true, cancelable:true, clientX: stored.cx, clientY: stored.cy }));
-              return { success: true, message: `Clicked [${index}] via coordinates (stale fallback)` };
+              live.scrollIntoView({ block: 'nearest' });
+              live.click();
+              for (const t of ['pointerdown','mousedown','pointerup','mouseup','click']) {
+                live.dispatchEvent(new (t.startsWith('pointer') ? PointerEvent : MouseEvent)(t,
+                  { bubbles: true, cancelable: true, clientX: fx, clientY: fy, pointerId: 1 }));
+              }
+              return { success: true, message: `Clicked via coord fallback (${fx},${fy})` };
             }
           }
-          return { success: false, message: `Element [${index}] not found` };
+          return { success: false, message: `Element ${ref ? '#'+ref : '['+index+']'} not found` };
         }
         el.scrollIntoView({ block: 'nearest' });
         await new Promise(r => setTimeout(r, 80));
