@@ -879,36 +879,6 @@ async function runAgentLoop(tabId, goal, onStep, opts = {}) {
 
     invalidateSnapCache(tabId);
 
-    // ── VALIDATOR AGENT (Nanobrowser-style) ────────────────────────────────
-    // After each click/fill: verify the page changed as expected.
-    const VALIDATE_ACTIONS = ['click','click_xy','fill','fill_otp','select','press','press_on'];
-    if (result?.success && VALIDATE_ACTIONS.includes(action.action)) {
-      try {
-        // Short settle before reading after-state
-        await new Promise(r => setTimeout(r, 700));
-        const afterSnap = await getEnrichedSnapshot(tabId, { fresh: true }).catch(() => null);
-        if (afterSnap) {
-          const afterScreen = await takeScreenshot().catch(() => null);
-          const validation = await validateAction(desc, prevSnapshotSig, afterSnap.text, afterScreen);
-          if (validation && !validation.success) {
-            validatorFailStreak++;
-            onStep({ type: 'step', text: `Step ${step}: validator says action may not have worked — ${validation.reason} (${validatorFailStreak}/${MAX_VALIDATOR_FAILS})` });
-            if (validatorFailStreak >= MAX_VALIDATOR_FAILS) {
-              const msg = `Action "${desc}" failed validation ${MAX_VALIDATOR_FAILS} times: ${validation.reason}`;
-              speak('I seem stuck. Please check the page.');
-              return { success: false, message: msg };
-            }
-            // Force fresh snapshot next iteration for self-healing
-            prevSnapshotSig = '';
-          } else {
-            validatorFailStreak = 0;
-            // Update prevSnapshotSig to after-state so stuck-detection works correctly
-            prevSnapshotSig = afterSnap.text.slice(0, 300);
-          }
-        }
-      } catch { /* validator failure non-fatal */ }
-    }
-
     history.push(`${desc}: ${result?.success ? 'ok' : result?.message || '?'}||${actionKey}`);
     if (_abortLoop) return { success: false, message: 'Stopped by user.' };
 
@@ -931,6 +901,37 @@ async function runAgentLoop(tabId, goal, onStep, opts = {}) {
       onStep({ type: 'step', text: `Step ${step}: waiting for page…` });
       await waitForTabLoad(tab.id);
       prevSnapshotSig = '';
+    }
+
+    // ── VALIDATOR AGENT (Nanobrowser-style) ────────────────────────────────
+    // Runs AFTER smart-wait + page-load so nav actions settle before we check.
+    // Only validates meaningful interactive actions, not navigation/scroll/wait.
+    const VALIDATE_ACTIONS = ['click','click_xy','fill','fill_otp','select','press','press_on'];
+    if (result?.success && VALIDATE_ACTIONS.includes(action.action)) {
+      try {
+        const afterSnap = await getEnrichedSnapshot(tabId, { fresh: true }).catch(() => null);
+        if (afterSnap) {
+          const afterScreen = await takeScreenshot().catch(() => null);
+          const validation = await validateAction(desc, prevSnapshotSig, afterSnap.text, afterScreen);
+          if (validation && !validation.success) {
+            validatorFailStreak++;
+            onStep({ type: 'step', text: `Step ${step}: validator: action may not have worked — ${validation.reason} (${validatorFailStreak}/${MAX_VALIDATOR_FAILS})` });
+            if (validatorFailStreak >= MAX_VALIDATOR_FAILS) {
+              const msg = `"${desc}" failed validation ${MAX_VALIDATOR_FAILS} times: ${validation.reason}`;
+              speak('I seem stuck. Please check the page.');
+              return { success: false, message: msg };
+            }
+            // Force fresh read next iteration so self-healing picks up the real state
+            prevSnapshotSig = '';
+            sameSnapshotCount = 0;
+          } else {
+            validatorFailStreak = 0;
+            // Mark page as changed so stuck-detection doesn't fire next iteration
+            sameSnapshotCount = 0;
+            prevSnapshotSig = ''; // let next iteration re-baseline naturally
+          }
+        }
+      } catch { /* validator failure non-fatal */ }
     }
   }
 
