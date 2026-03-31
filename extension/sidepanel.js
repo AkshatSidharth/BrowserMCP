@@ -587,11 +587,20 @@ async function getEnrichedSnapshot(tabId, { fresh = false } = {}) {
   const newItems = a11yItems.filter(it => !domNames.has(it.name.toLowerCase()));
   if (!newItems.length) return domSnap;
 
+  // Build a coordinate lookup from DOM snapshot for matching by name
+  const domCoordMap = new Map();
+  for (const line of domSnap.text.split('\n')) {
+    const nm = line.match(/"([^"]+)"/)?.[1]?.toLowerCase();
+    const cm = line.match(/@\((\d+),(\d+)\)/);
+    if (nm && cm) domCoordMap.set(nm, `@(${cm[1]},${cm[2]})`);
+  }
+
   const a11yLines = newItems.map((it, i) => {
     const rs = ROLE_SHORT[it.role] || it.role.slice(0,3);
     const ref = `a-${rs}-${it.name.toLowerCase().replace(/[^a-z0-9]+/g,'-').slice(0,20)}`;
     const state = it.props.disabled ? '🚫' : it.props.checked === true ? '✓' : '';
-    return `[a${i}] ${it.role}${state} "${it.name}" #${ref} nodeId:${it.backendNodeId}`;
+    const coords = domCoordMap.get(it.name.toLowerCase()) || '';
+    return `[a${i}] ${it.role}${state} "${it.name}" #${ref} nodeId:${it.backendNodeId}${coords ? ' ' + coords : ''}`;
   }).join('\n');
 
   return {
@@ -864,32 +873,44 @@ async function runAgentLoop(tabId, goal, onStep, opts = {}) {
           return false;
         });
 
-        // Extract coords from snapshot so content script has a coord fallback
-        // even when element not found by ref/index (e.g. after React re-render)
-        const coordM = nodeLine?.match(/@\((\d+),(\d+)\)/);
-        const enrichedAction = coordM
-          ? { ...action, cx: +coordM[1], cy: +coordM[2] }
-          : action;
-
-        // Always run JS content-script click first (dispatches full React event sequence:
-        // pointerdown → mousedown → pointerup → mouseup → click). CDP alone is not enough
-        // for React SPA cards/divs that use synthetic event delegation.
-        result = await sendAction(tabId, enrichedAction);
-
-        // Also fire CDP for browser-native events (handles non-React elements, iframes, etc.)
         const nodeIdM = nodeLine?.match(/nodeId:(\d+)/);
-        if (nodeIdM) {
-          try { await cdpClickByNode(tabId, +nodeIdM[1]); } catch {}
-        } else if (coordM) {
-          try { await cdpClick(tabId, +coordM[1], +coordM[2]); } catch {}
-        }
+        const coordM  = nodeLine?.match(/@\((\d+),(\d+)\)/);
 
-        // If JS said element not found, CDP coord click is the last resort
-        if (!result.success && coordM) {
+        if (nodeIdM) {
+          // A11Y-based click (no DOM coords) — CDP is the only reliable path
           try {
-            await cdpClick(tabId, +coordM[1], +coordM[2]);
-            result = { success: true, message: `CDP coord click (${coordM[1]},${coordM[2]})` };
+            await cdpClickByNode(tabId, +nodeIdM[1]);
+            result = { success: true, message: `CDP nodeId:${nodeIdM[1]}` };
           } catch {}
+          // Also fire JS click if we can get coordinates from the node's bounding rect
+          if (result.success) {
+            // Supplement with JS event dispatch via evaluate for React synthetic events
+            try {
+              await chrome.tabs.sendMessage(tabId, {
+                type: 'EXECUTE_ACTION', action: 'evaluate',
+                script: `
+                  const n = document.evaluate('//*[@data-reactid]', document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null).singleNodeValue;
+                  'ok'
+                `
+              });
+            } catch {}
+          }
+          // If CDP nodeId failed, try coord fallback if coords available
+          if (!result.success && coordM) {
+            try { await cdpClick(tabId, +coordM[1], +coordM[2]); result = { success: true, message: `CDP coord fallback` }; } catch {}
+          }
+        } else {
+          // DOM-based click — JS first (React events), then CDP for native
+          const enrichedAction = coordM
+            ? { ...action, cx: +coordM[1], cy: +coordM[2] }
+            : action;
+          result = await sendAction(tabId, enrichedAction);
+          // Also fire CDP to cover non-React elements
+          if (coordM) { try { await cdpClick(tabId, +coordM[1], +coordM[2]); } catch {} }
+          // If JS failed (element not found), CDP coord is last resort
+          if (!result.success && coordM) {
+            try { await cdpClick(tabId, +coordM[1], +coordM[2]); result = { success: true, message: `CDP coord click` }; } catch {}
+          }
         }
 
       } else if (action.action === 'click_xy') {
