@@ -323,9 +323,20 @@ KAPTURE VOICE AGENT CREATION (kapturecrm.com/app/workspace/.../aiagents):
     f) TOOLS TAB — click "Tools" tab to switch:
        - Sub-tabs: Pre Actions | In-Prompt Functions | Post Actions | Knowledge Base — click to switch.
        - Each sub-tab has a list of function cards with checkboxes. Click the checkbox to enable a function.
-       - "Create New" dashed button creates a new function.
+       - "Create New" dashed button (dashed border, pink "+") creates a new function tool.
        - TOOLTIP MODAL: if a tooltip/guide popup appears (has a "Next" or "✕" button), dismiss it first.
+       - ⚠️ "Pre Actions" sub-tab = API/function tools that run BEFORE the call starts.
+         "Generate Prompt" on the Model tab is COMPLETELY DIFFERENT — do NOT confuse them.
     g) Return done when "Save & update" button has been clicked and page shows success or URL has agent ID.
+
+KAPTURE TOOL CREATION — standalone commands (outside full agent creation flow):
+25. "create a pre call tool" / "write a pre action tool" / "add pre action" / "pre call function":
+    → Click "Tools" tab → click "Pre Actions" sub-tab → click "Create New" dashed button.
+    → Fill the tool name and function body as specified in the goal.
+    ⚠️ NEVER click "Generate Prompt" on the Model tab for this — that is for agent prompts only.
+26. "create a post call tool" / "post action" → Tools tab → Post Actions → Create New.
+27. "create an in-prompt function" / "in-prompt tool" → Tools tab → In-Prompt Functions → Create New.
+28. "add knowledge base" / "upload document" → Tools tab → Knowledge Base → upload button.
 
 STUCK DETECTION:
 24. If snapshot looks identical to previous step, try scrolling or a different element.
@@ -346,6 +357,12 @@ function parseSnapshotIndices(pageText) {
 const PLANNER_PROMPT = `You are a browser automation planner. You see the current page and a goal.
 Generate a concise ordered execution plan — 3 to 8 steps maximum.
 Be specific about what to click/fill on THIS page. Do not invent elements not on the page.
+
+KAPTURE CRM DOMAIN KNOWLEDGE (kapturecrm.com / adjetter.com):
+- "pre call tool" / "pre action tool" / "pre action function" = Tools tab → Pre Actions sub-tab → Create New (dashed pink button). NOT the "Generate Prompt" button on the Model tab.
+- "post call tool" = Tools tab → Post Actions → Create New.
+- "in-prompt function" = Tools tab → In-Prompt Functions → Create New.
+- "Generate Prompt" on Model tab = generates the agent system prompt. Completely different from tool creation.
 
 Return JSON: {"steps": ["Step 1: ...", "Step 2: ...", ...], "notes": "any caveats"}
 Only return valid JSON, no markdown.`;
