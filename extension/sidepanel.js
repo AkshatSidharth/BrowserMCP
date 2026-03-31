@@ -888,6 +888,15 @@ async function runAgentLoop(tabId, goal, onStep, opts = {}) {
       continue;
     }
 
+    // Snapshot max tab ID right before click so new-tab detection is per-click precise
+    let preClickMaxTabId = tabId;
+    if (['click','click_xy'].includes(action.action)) {
+      try {
+        const preTabs = await chrome.tabs.query({ currentWindow: true });
+        preClickMaxTabId = Math.max(...preTabs.map(t => t.id));
+      } catch {}
+    }
+
     // Execute action
     let result = { success: false, message: 'no response' };
     try {
@@ -1036,13 +1045,27 @@ async function runAgentLoop(tabId, goal, onStep, opts = {}) {
     invalidateSnapCache(tabId);
 
     // ── New-tab follow ───────────────────────────────────────────────────────
-    // Only follow a tab that was NEWLY CREATED by this click (id > any pre-click tab).
-    // Avoids hijacking pre-existing tabs, ads, or background tabs.
+    // Only follow a tab created by THIS exact click (id > preClickMaxTabId).
+    // Also skip root-path pages on a different domain — those are marketing/landing
+    // pages accidentally opened, not the app the user is working in.
     if (result?.success && ['click','click_xy'].includes(action.action)) {
       await new Promise(r => setTimeout(r, 700));
       try {
         const afterTabs = await chrome.tabs.query({ currentWindow: true });
-        const freshTab = afterTabs.find(t => t.id > tabId && !t.url?.startsWith('chrome'));
+        // Get current tab's hostname for relevance check
+        const curTabUrl = afterTabs.find(t => t.id === tabId)?.url || '';
+        const curHostname = (() => { try { return new URL(curTabUrl).hostname; } catch { return ''; } })();
+        const freshTab = afterTabs.find(t => {
+          if (t.id <= preClickMaxTabId || t.url?.startsWith('chrome')) return false;
+          // Relevance: don't follow root-path tabs on a different domain (marketing pages)
+          try {
+            const u = new URL(t.url || '');
+            if (curHostname && u.hostname !== curHostname) {
+              if (u.pathname === '/' || u.pathname === '') return false;
+            }
+          } catch { return false; }
+          return true;
+        });
         if (freshTab) {
           await chrome.tabs.update(freshTab.id, { active: true });
           if (freshTab.status === 'loading') {
@@ -1054,6 +1077,11 @@ async function runAgentLoop(tabId, goal, onStep, opts = {}) {
           sameSnapshotCount = 0;
           invalidateSnapCache(tabId);
           onStep({ type: 'step', text: `Step ${step}: following new tab` });
+          // Re-open panel so it stays visible after tab switch (Chrome closes tab-scoped panels)
+          try {
+            const win = await chrome.windows.getCurrent();
+            await chrome.sidePanel.open({ windowId: win.id });
+          } catch { /* non-fatal */ }
           try {
             const ntSnap = await getEnrichedSnapshot(tabId, { fresh: true }).catch(() => null);
             const ntScreen = await takeScreenshot().catch(() => null);

@@ -1,5 +1,10 @@
 'use strict';
 
+// ── Keep sidepanel open across ALL tab switches (window-scoped, not tab-scoped) ─
+chrome.runtime.onInstalled.addListener(() => {
+  chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: true }).catch(() => {});
+});
+
 // ── Open sidepanel when extension icon is clicked ────────────────────────────
 chrome.action.onClicked.addListener((tab) => {
   chrome.sidePanel.open({ windowId: tab.windowId });
