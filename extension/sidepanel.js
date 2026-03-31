@@ -27,7 +27,7 @@ async function getApiKey() {
 }
 
 // ── OpenAI fetch ──────────────────────────────────────────────────────────────
-async function callOpenAI(messages, { model = 'gpt-5.1', maxTokens = 512, json = false } = {}) {
+async function callOpenAI(messages, { model = 'gpt-5.1', maxTokens = 512, json = false, timeoutMs = 45000 } = {}) {
   const apiKey = await getApiKey();
   if (!apiKey) throw new Error('No API key. Click ⚙️ Settings to add your OpenAI key.');
 
@@ -36,11 +36,20 @@ async function callOpenAI(messages, { model = 'gpt-5.1', maxTokens = 512, json =
   const body = { model, messages, [isNewModel ? 'max_completion_tokens' : 'max_tokens']: maxTokens, temperature: 0 };
   if (json) body.response_format = { type: 'json_object' };
 
-  const resp = await fetch('https://api.openai.com/v1/chat/completions', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${apiKey}` },
-    body: JSON.stringify(body),
-  });
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), timeoutMs);
+
+  let resp;
+  try {
+    resp = await fetch('https://api.openai.com/v1/chat/completions', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${apiKey}` },
+      body: JSON.stringify(body),
+      signal: ctrl.signal,
+    });
+  } finally {
+    clearTimeout(timer);
+  }
 
   if (!resp.ok) {
     const e = await resp.json().catch(() => ({}));
@@ -393,8 +402,13 @@ async function getNextStep(goal, pageText, screenshotUrl, history, plan) {
     ? '\nSteps done (recent):\n' + recentHistory.map((h, i) => `${i + 1}. ${h}`).join('\n')
     : '\nNo steps yet.';
 
+  // Mark plan steps as done if their key phrase appears in history
   const planCtx = plan?.steps?.length
-    ? `\nEXECUTION PLAN (follow this order):\n${plan.steps.map((s, i) => `${i + 1}. ${s}`).join('\n')}\n`
+    ? `\nEXECUTION PLAN:\n${plan.steps.map((s, i) => {
+        const keyword = s.replace(/^step\s*\d+[:\-\s]*/i, '').slice(0, 40).toLowerCase();
+        const isDone = history.some(h => h.toLowerCase().includes(keyword));
+        return `${i + 1}. ${isDone ? '[DONE] ' : ''}${s}`;
+      }).join('\n')}\nContinue with the FIRST step NOT marked [DONE].\n`
     : '';
 
   const goalText = `GOAL: ${goal}${planCtx}${hist}\n\nCurrent page (ONLY use indices/refs from this list):\n${pageText}\n\nNext single action?`;
@@ -621,6 +635,20 @@ async function runAgentLoop(tabId, goal, onStep, opts = {}) {
   let plan = null;
   let validatorFailStreak = 0;
   const MAX_VALIDATOR_FAILS = 3;
+  let lastPlanUrl = '';
+
+  // Helper: generate or refresh plan for current page
+  async function refreshPlan(snap, screen) {
+    try {
+      const p = await planTask(goal, snap.text, screen);
+      if (p?.steps?.length) {
+        plan = p;
+        const [t] = await chrome.tabs.query({ active: true, currentWindow: true });
+        lastPlanUrl = t?.url || '';
+        onStep({ type: 'step', text: `Plan (${plan.steps.length} steps): ${plan.steps[0]}` });
+      }
+    } catch { /* non-fatal */ }
+  }
 
   // ── PLANNER: generate step-by-step plan before loop starts ───────────────
   try {
@@ -628,12 +656,7 @@ async function runAgentLoop(tabId, goal, onStep, opts = {}) {
     await new Promise(r => setTimeout(r, 300));
     const initSnap = await getEnrichedSnapshot(tabId).catch(() => null);
     const initScreen = await takeScreenshot().catch(() => null);
-    if (initSnap) {
-      plan = await planTask(goal, initSnap.text, initScreen);
-      if (plan?.steps?.length) {
-        onStep({ type: 'step', text: `Plan ready (${plan.steps.length} steps): ${plan.steps[0]}` });
-      }
-    }
+    if (initSnap) await refreshPlan(initSnap, initScreen);
   } catch { /* planner failure non-fatal */ }
 
   for (let step = 1; step <= MAX; step++) {
@@ -901,6 +924,20 @@ async function runAgentLoop(tabId, goal, onStep, opts = {}) {
       onStep({ type: 'step', text: `Step ${step}: waiting for page…` });
       await waitForTabLoad(tab.id);
       prevSnapshotSig = '';
+    }
+
+    // Re-plan when URL changed significantly (new page = old plan is stale)
+    if (tab?.url && lastPlanUrl && tab.url !== lastPlanUrl) {
+      const sameOrigin = new URL(tab.url).origin === new URL(lastPlanUrl).origin;
+      // Only re-plan on cross-origin navigations or clear path changes (not hash/query tweaks)
+      const pathChanged = new URL(tab.url).pathname !== new URL(lastPlanUrl).pathname;
+      if (!sameOrigin || pathChanged) {
+        try {
+          const reSnap = await getEnrichedSnapshot(tabId, { fresh: true }).catch(() => null);
+          const reScreen = await takeScreenshot().catch(() => null);
+          if (reSnap) await refreshPlan(reSnap, reScreen);
+        } catch { /* non-fatal */ }
+      }
     }
 
     // ── VALIDATOR AGENT (Nanobrowser-style) ────────────────────────────────
