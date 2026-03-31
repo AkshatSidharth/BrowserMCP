@@ -303,8 +303,13 @@ KAPTURE CRM (adjetter.com / kapturecrm.com):
 22. Login: click Sign in with Google.
 23. Partner login flow: LOGIN TO PARTNER EMPLOYEE → Select Admin Server → Domain Name (react-select: type to search) → Select Employee → Remarks (5+ words) → Submit.
 
+ACTIVE-TAB RULE (critical — prevents loops):
+24. Before clicking any tab or sub-tab, check if it is ALREADY active (highlighted/selected/underlined).
+    If it IS already active → DO NOT click it again. Skip to the next step (click sub-tab, fill content, etc.).
+    Applies to all tabs: Model, Tools, Transcriber, Voice, Test, Deploy, Pre Actions, In-Prompt Functions, Post Actions, Knowledge Base.
+
 KAPTURE VOICE AGENT CREATION (kapturecrm.com/app/workspace/.../aiagents):
-24. Full flow when goal contains "Create a new Kapture voice agent":
+25. Full flow when goal contains "Create a new Kapture voice agent":
     a) Go to AI Agents page → click "Create New" button.
     b) PAGE 1 — Industry selection: click the specified industry card (cursor:pointer div). Card highlights on selection.
        After clicking, wait 1.5s — page auto-advances to Page 2.
@@ -335,18 +340,20 @@ KAPTURE VOICE AGENT CREATION (kapturecrm.com/app/workspace/.../aiagents):
     g) Return done when "Save & update" button has been clicked and page shows success or URL has agent ID.
 
 KAPTURE TOOL CREATION — standalone commands (outside full agent creation flow):
-25. "create a pre call tool" / "write a pre action tool" / "add pre action" / "pre call function":
-    → Click "Tools" tab → click "Pre Actions" sub-tab → click "Create New" dashed button.
+26. "create a pre call tool" / "write a pre action tool" / "add pre action" / "pre call function":
+    → If not on Tools tab: click "Tools" tab. If already on Tools tab: skip directly to next step.
+    → Click "Pre Actions" sub-tab (if not already active). If already active: skip to next step.
+    → Click "Create New" dashed pink button.
     → Fill the tool name and function body as specified in the goal.
     ⚠️ NEVER click "Generate Prompt" on the Model tab for this — that is for agent prompts only.
-26. "create a post call tool" / "post action" → Tools tab → Post Actions → Create New.
-27. "create an in-prompt function" / "in-prompt tool" → Tools tab → In-Prompt Functions → Create New.
-28. "add knowledge base" / "upload document" → Tools tab → Knowledge Base → upload button.
+27. "create a post call tool" / "post action" → Tools tab (if not active) → Post Actions sub-tab (if not active) → Create New.
+28. "create an in-prompt function" / "in-prompt tool" → Tools tab (if not active) → In-Prompt Functions sub-tab (if not active) → Create New.
+29. "add knowledge base" / "upload document" → Tools tab (if not active) → Knowledge Base sub-tab (if not active) → upload button.
 
 STUCK DETECTION:
-24. If snapshot looks identical to previous step, try scrolling or a different element.
-25. If an element click fails (not found), use click_xy at the element's @(cx,cy) as fallback.
-26. After 3 failed attempts on same step, return failed with a clear reason.
+30. If snapshot looks identical to previous step, try scrolling or a different element.
+31. If an element click fails (not found), use click_xy at the element's @(cx,cy) as fallback.
+32. After 3 failed attempts on same step, return failed with a clear reason.
 `.trim();
 
 // Parse valid indices from snapshot text e.g. "[3] enabled button..." → Set{3}
@@ -848,6 +855,21 @@ async function runAgentLoop(tabId, goal, onStep, opts = {}) {
     // ── Single-action repeat guard ────────────────────────────────────────
     const recentKeys = history.map(h => h.split('||')[1]).filter(Boolean);
     const repeatCount = recentKeys.slice(-4).filter(k => k === actionKey).length;
+
+    // Description-based repeat guard (catches index-shifting between snapshots
+    // where actionKey differs but the agent is doing the exact same thing)
+    const descNorm = desc.toLowerCase().trim().slice(0, 60);
+    const recentDescs = history.slice(-5).map(h => h.split(':')[0].toLowerCase().trim().slice(0, 60));
+    const descRepeatCount = recentDescs.filter(d => d === descNorm).length;
+    if (descRepeatCount >= 2 && ['click','click_xy'].includes(action.action)) {
+      onStep({ type: 'step', text: `Step ${step}: loop detected ("${desc}" repeated) — forcing re-think…` });
+      history.push(`[LOOP] "${desc}" repeated ${descRepeatCount + 1}×; taking different approach||${actionKey}`);
+      goal = goal + `\n\nSTUCK ALERT: "${desc}" was attempted ${descRepeatCount + 1} times without progress. The element may already be active/selected. Look at the screenshot — find a DIFFERENT next action (e.g. click a sub-tab, interact with page content, or scroll).`;
+      prevSnapshotSig = '';
+      sameSnapshotCount = 0;
+      continue;
+    }
+
     if (repeatCount >= 2 && (action.action === 'click' || action.action === 'click_xy')) {
       const coordLine = snapshot.text.split('\n')
         .find(l => action.index != null ? l.trimStart().startsWith(`[${action.index}]`) : false);
