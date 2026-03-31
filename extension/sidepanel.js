@@ -788,15 +788,16 @@ async function runAgentLoop(tabId, goal, onStep, opts = {}) {
         const injectResult = await sendAction(tabId, {
           action: 'evaluate',
           script: `
-            const ta = document.querySelector('textarea[placeholder*="train"], textarea[class*="prompt"], .agent-prompt textarea, textarea');
+            const ta = document.querySelector('textarea');
             if (ta) {
               const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')?.set;
               if (setter) setter.call(ta, ${JSON.stringify(opts.injectText)});
               else ta.value = ${JSON.stringify(opts.injectText)};
               ta.dispatchEvent(new Event('input', {bubbles:true}));
               ta.dispatchEvent(new Event('change', {bubbles:true}));
-              'injected ' + ta.value.length + ' chars';
-            } else 'textarea not found'
+              return 'injected ' + ta.value.length + ' chars';
+            }
+            return 'textarea not found';
           `
         });
         if (injectResult?.message?.startsWith('injected')) {
@@ -996,7 +997,9 @@ async function runAgentLoop(tabId, goal, onStep, opts = {}) {
 
     // ── VALIDATOR AGENT (Nanobrowser-style) ────────────────────────────────
     // Runs AFTER smart-wait + page-load so SPA transitions have time to settle.
-    const VALIDATE_ACTIONS = ['click','click_xy','fill','fill_otp','select','press','press_on'];
+    // Only validate clicks/selects — fill actions are trusted if content script
+    // reported success (textarea value changes aren't visible in 400-char snapshot diff).
+    const VALIDATE_ACTIONS = ['click','click_xy','select','press_on'];
     let validationFailed = false;
     if (result?.success && VALIDATE_ACTIONS.includes(action.action)) {
       try {
