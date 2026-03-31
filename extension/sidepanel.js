@@ -1012,25 +1012,24 @@ async function runAgentLoop(tabId, goal, onStep, opts = {}) {
     invalidateSnapCache(tabId);
 
     // ── New-tab follow ───────────────────────────────────────────────────────
-    // If a click opened a new tab (common for "Create New" or external links),
-    // switch focus to that tab so the rest of the loop works in the right context.
+    // Only follow a tab that was NEWLY CREATED by this click (id > any pre-click tab).
+    // Avoids hijacking pre-existing tabs, ads, or background tabs.
     if (result?.success && ['click','click_xy'].includes(action.action)) {
-      await new Promise(r => setTimeout(r, 600));
+      await new Promise(r => setTimeout(r, 700));
       try {
-        const allTabs = await chrome.tabs.query({ currentWindow: true });
-        const newTab = allTabs.find(t => t.id !== tabId && t.status !== 'unloaded');
-        if (newTab) {
-          await chrome.tabs.update(newTab.id, { active: true });
-          if (newTab.status === 'loading') {
-            onStep({ type: 'step', text: `Step ${step}: new tab opened — waiting for page…` });
-            await waitForTabLoad(newTab.id);
+        const afterTabs = await chrome.tabs.query({ currentWindow: true });
+        const freshTab = afterTabs.find(t => t.id > tabId && !t.url?.startsWith('chrome'));
+        if (freshTab) {
+          await chrome.tabs.update(freshTab.id, { active: true });
+          if (freshTab.status === 'loading') {
+            onStep({ type: 'step', text: `Step ${step}: new tab opened — waiting…` });
+            await waitForTabLoad(freshTab.id);
           }
-          tabId = newTab.id;
+          tabId = freshTab.id;
           prevSnapshotSig = '';
           sameSnapshotCount = 0;
           invalidateSnapCache(tabId);
-          onStep({ type: 'step', text: `Step ${step}: switched to new tab` });
-          // Re-plan for the new page context
+          onStep({ type: 'step', text: `Step ${step}: following new tab` });
           try {
             const ntSnap = await getEnrichedSnapshot(tabId, { fresh: true }).catch(() => null);
             const ntScreen = await takeScreenshot().catch(() => null);
