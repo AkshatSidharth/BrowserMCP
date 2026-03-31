@@ -233,10 +233,19 @@ function buildSnapshot() {
 
   const pageText = getVisibleText();
 
+  // Scroll position context (page-agent spatial awareness pattern)
+  const pixelsAbove = Math.round(window.scrollY);
+  const pixelsBelow = Math.round(Math.max(0, document.documentElement.scrollHeight - window.scrollY - window.innerHeight));
+  const pagesAbove  = parseFloat((window.scrollY / Math.max(1, window.innerHeight)).toFixed(1));
+  const pagesBelow  = parseFloat((pixelsBelow / Math.max(1, window.innerHeight)).toFixed(1));
+  const scrollLine  = (pixelsBelow > 100 || pixelsAbove > 100)
+    ? `\nScroll: ${pixelsAbove}px above (${pagesAbove}p), ${pixelsBelow}px below (${pagesBelow}p) — scroll to reveal more elements\n`
+    : '';
+
   return {
     url:   location.href,
     title: document.title,
-    text:  `Page: ${document.title}\nURL: ${location.href}\n${pageText ? `\nVisible text: ${pageText}\n` : ''}\nElements:\n${lines || '(none)'}`,
+    text:  `Page: ${document.title}\nURL: ${location.href}${scrollLine}\n${pageText ? `\nVisible text: ${pageText}\n` : ''}\nElements:\n${lines || '(none)'}`,
     count: _els.length,
   };
 }
@@ -311,6 +320,10 @@ async function executeAction(msg) {
             if (live) {
               live.focus();
               live.scrollIntoView({ block: 'nearest' });
+              live.dispatchEvent(new PointerEvent('pointerenter', { bubbles: false, cancelable: false, clientX: fx, clientY: fy, pointerId: 1 }));
+              live.dispatchEvent(new PointerEvent('pointerover',  { bubbles: true,  cancelable: true,  clientX: fx, clientY: fy, pointerId: 1 }));
+              live.dispatchEvent(new MouseEvent('mouseenter',     { bubbles: false, cancelable: false, clientX: fx, clientY: fy }));
+              live.dispatchEvent(new MouseEvent('mouseover',      { bubbles: true,  cancelable: true,  clientX: fx, clientY: fy }));
               live.click();
               for (const t of ['pointerdown','mousedown','pointerup','mouseup','click']) {
                 live.dispatchEvent(new (t.startsWith('pointer') ? PointerEvent : MouseEvent)(t,
@@ -330,6 +343,13 @@ async function executeAction(msg) {
         // Use the actual topmost element at those coordinates (handles React portals/overlays)
         const topEl = document.elementFromPoint(cx, cy) || el;
         topEl.focus();
+        // Full pointer+mouse hover sequence first (page-agent pattern).
+        // Triggers React/Vue hover-activated menus, tooltips, and highlight states.
+        topEl.dispatchEvent(new PointerEvent('pointerenter', { bubbles: false, cancelable: false, clientX: cx, clientY: cy, pointerId: 1 }));
+        topEl.dispatchEvent(new PointerEvent('pointerover',  { bubbles: true,  cancelable: true,  clientX: cx, clientY: cy, pointerId: 1 }));
+        topEl.dispatchEvent(new MouseEvent('mouseenter',     { bubbles: false, cancelable: false, clientX: cx, clientY: cy }));
+        topEl.dispatchEvent(new MouseEvent('mouseover',      { bubbles: true,  cancelable: true,  clientX: cx, clientY: cy }));
+        topEl.dispatchEvent(new MouseEvent('mousemove',      { bubbles: true,  cancelable: true,  clientX: cx, clientY: cy }));
         topEl.click(); // native click — React/Vue/Angular respond to this
         for (const t of ['pointerdown','mousedown','pointerup','mouseup','click']) {
           topEl.dispatchEvent(new (t.startsWith('pointer') ? PointerEvent : MouseEvent)(t,
@@ -468,6 +488,11 @@ async function executeAction(msg) {
         const el = document.elementFromPoint(x, y);
         if (!el) return { success: false, message: `No element at (${x},${y})` };
         el.focus();
+        el.dispatchEvent(new PointerEvent('pointerenter', { bubbles: false, cancelable: false, clientX: x, clientY: y, pointerId: 1 }));
+        el.dispatchEvent(new PointerEvent('pointerover',  { bubbles: true,  cancelable: true,  clientX: x, clientY: y, pointerId: 1 }));
+        el.dispatchEvent(new MouseEvent('mouseenter',     { bubbles: false, cancelable: false, clientX: x, clientY: y }));
+        el.dispatchEvent(new MouseEvent('mouseover',      { bubbles: true,  cancelable: true,  clientX: x, clientY: y }));
+        el.dispatchEvent(new MouseEvent('mousemove',      { bubbles: true,  cancelable: true,  clientX: x, clientY: y }));
         el.click();
         for (const t of ['pointerdown','mousedown','pointerup','mouseup','click']) {
           el.dispatchEvent(new (t.startsWith('pointer') ? PointerEvent : MouseEvent)(t,

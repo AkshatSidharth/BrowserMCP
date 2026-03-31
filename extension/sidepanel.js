@@ -226,6 +226,11 @@ A11Y TREE format: [aN] role "name" #ref nodeId:NNNN
 
 Return ONE JSON action per turn. Return ONLY valid JSON, no markdown, no explanation.
 
+REFLECTION (include in every response — prevents loops):
+Add a "reflection" object as the first key:
+{"reflection":{"evaluation":"Did last action work? 1 sentence.","next_goal":"What I'm doing now. 1 sentence."},"action":"..."}
+First step: set evaluation to "Starting." If last action failed, say why and try a different approach.
+
 REFERENCING ELEMENTS (in order of preference):
 1. Use #ref  → {"action":"click","ref":"btn-add-to-cart","description":"..."}
 2. Use index → {"action":"click","index":12,"description":"..."}
@@ -411,6 +416,25 @@ async function validateAction(desc, beforeSig, afterText, screenshotUrl) {
   }
 }
 
+// ── Auto-fix malformed GPT JSON (page-agent AutoFixer pattern) ───────────────
+// Handles: JSON in markdown blocks, plain JSON mixed with text, double-stringified,
+// missing closing braces. Falls back to safe "wait" action on total failure.
+function autoFixResponse(raw) {
+  // 1. Direct parse (happy path)
+  try { return JSON.parse(raw); } catch {}
+  // 2. JSON inside ```json ... ``` or ``` ... ```
+  const mdMatch = raw.match(/```(?:json)?\s*([\s\S]*?)```/);
+  if (mdMatch) { try { return JSON.parse(mdMatch[1].trim()); } catch {} }
+  // 3. First {...} block (response has extra prose around JSON)
+  const braceMatch = raw.match(/\{[\s\S]*\}/);
+  if (braceMatch) { try { return JSON.parse(braceMatch[0]); } catch {} }
+  // 4. Double-stringified (JSON.stringify called twice)
+  try { const once = JSON.parse(raw); if (typeof once === 'string') return JSON.parse(once); } catch {}
+  // 5. Safe fallback — keeps loop alive
+  console.warn('[Casper] autoFix: could not parse GPT response:', raw.slice(0, 200));
+  return { action: 'wait', ms: 1500, description: 'Waiting (GPT response parse error)' };
+}
+
 // ── NAVIGATOR (unchanged interface, now receives plan context) ────────────────
 async function getNextStep(goal, pageText, screenshotUrl, history, plan) {
   // Keep only last 8 steps to prevent context drift / hallucination from long history
@@ -455,7 +479,7 @@ async function getNextStep(goal, pageText, screenshotUrl, history, plan) {
     [{ role: 'system', content: AGENT_PROMPT }, { role: 'user', content: userContent }],
     { maxTokens: 800, json: true }
   );
-  const action = JSON.parse(raw);
+  const action = autoFixResponse(raw);
 
   // Validate: if action uses an index (not ref), confirm it exists in the snapshot
   if (action.index != null && !action.ref && !['done','failed','ask'].includes(action.action)) {
@@ -472,7 +496,7 @@ async function getNextStep(goal, pageText, screenshotUrl, history, plan) {
         ],
         { maxTokens: 800, json: true }
       );
-      return JSON.parse(raw2);
+      return autoFixResponse(raw2);
     }
   }
 
@@ -1108,10 +1132,16 @@ async function runAgentLoop(tabId, goal, onStep, opts = {}) {
     }
 
     // Write to history AFTER validator so GPT knows whether the action actually worked
+    // Append reflection evaluation (GPT's self-assessment of the previous step) so
+    // the next call sees whether the agent believed it was making progress.
     const histStatus = validationFailed
       ? `VALIDATION FAILED — retry this action differently`
       : (result?.success ? 'ok' : result?.message || '?');
-    history.push(`${desc}: ${histStatus}||${actionKey}`);
+    const reflEval = action.reflection?.evaluation &&
+      !/starting/i.test(action.reflection.evaluation)
+        ? ` [${action.reflection.evaluation.slice(0, 70)}]`
+        : '';
+    history.push(`${desc}: ${histStatus}${reflEval}||${actionKey}`);
     if (_abortLoop) return { success: false, message: 'Stopped by user.' };
 
     // ── Wait-loop guard ──────────────────────────────────────────────────────
